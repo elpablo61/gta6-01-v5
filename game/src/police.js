@@ -26,7 +26,7 @@ export const POLICE_DEFS = {
   maxPatrolCars: 5,
 };
 
-export const SPRAY_SHOP = { x: 1000, y: 2200, radius: POLICE_DEFS.sprayShopRadius };
+export const SPRAY_SHOP = { x: 600, y: 2600, radius: 150 }; // CONFIG.sprayShop
 
 export function starsForHeat(heat) {
   let stars = 0;

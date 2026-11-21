@@ -14,30 +14,30 @@ export const ENEMY_DEFS = {
 export const SHOOTOUT_ARENAS = {
   m8: {
     center: { x: 1800, y: 1800 }, radius: 320,
-    enemies: [{ x: 1700, y: 1700 }, { x: 1900, y: 1700 }, { x: 1800, y: 1950 }],
+    enemies: [{ x: 1700, y: 1800 }, { x: 1900, y: 1800 }, { x: 1800, y: 1700 }],
     cover: [{ x: 1750, y: 1850 }, { x: 1860, y: 1750 }],
     health: [{ x: 1720, y: 1900 }, { x: 1880, y: 1900 }],
     ammo: [{ x: 1800, y: 1820 }],
   },
   m10: {
-    center: { x: 2560, y: 2560 }, radius: 340,
+    center: { x: 2600, y: 2600 }, radius: 340,
     enemies: [
-      { x: 2460, y: 2460 }, { x: 2660, y: 2460 }, { x: 2460, y: 2660 },
-      { x: 2660, y: 2660 }, { x: 2560, y: 2400 },
+      { x: 2460, y: 2600 }, { x: 2740, y: 2600 }, { x: 2600, y: 2460 },
+      { x: 2600, y: 2740 }, { x: 2500, y: 2600 },
     ],
     cover: [{ x: 2500, y: 2500 }, { x: 2620, y: 2620 }, { x: 2560, y: 2680 }],
-    health: [{ x: 2440, y: 2560 }, { x: 2680, y: 2560 }],
-    ammo: [{ x: 2520, y: 2520 }, { x: 2600, y: 2600 }],
+    health: [{ x: 2440, y: 2600 }, { x: 2760, y: 2600 }],
+    ammo: [{ x: 2520, y: 2600 }, { x: 2680, y: 2600 }],
   },
   m12: {
-    center: { x: 1800, y: 1800 }, radius: 340,
+    center: { x: 2200, y: 1800 }, radius: 340,
     enemies: [
-      { x: 1700, y: 1700 }, { x: 1900, y: 1700 },
-      { x: 1700, y: 1900 }, { x: 1900, y: 1900 },
+      { x: 2100, y: 1800 }, { x: 2300, y: 1800 },
+      { x: 2200, y: 1700 }, { x: 2200, y: 1900 },
     ],
-    cover: [{ x: 1750, y: 1850 }, { x: 1860, y: 1750 }, { x: 1800, y: 1700 }],
-    health: [{ x: 1720, y: 1900 }, { x: 1880, y: 1900 }, { x: 1800, y: 2000 }],
-    ammo: [{ x: 1800, y: 1820 }, { x: 1860, y: 1900 }],
+    cover: [{ x: 2150, y: 1850 }, { x: 2260, y: 1750 }, { x: 2200, y: 1700 }],
+    health: [{ x: 2120, y: 1900 }, { x: 2280, y: 1900 }, { x: 2200, y: 2000 }],
+    ammo: [{ x: 2200, y: 1820 }, { x: 2260, y: 1900 }],
   },
 };
 
@@ -129,8 +129,7 @@ export function resolvePlayerBullets(game) {
         e.hp -= b.damage;
         if (e.hp <= 0) {
           e.alive = false;
-          if (game.addCash) { /* no cash for a takedown; reward is the mission */ }
-          if (game.audio && game.audio.playPickup) game.audio.playPickup();
+          if (game.audio && game.audio.pickup) game.audio.pickup();
         }
         hit = true;
         break;
@@ -176,7 +175,7 @@ export function updateCombat(game, dt) {
         vx: Math.cos(a) * 620, vy: Math.sin(a) * 620,
         damage: ENEMY_DEFS.grunt.damage, life: 1.2,
       });
-      if (game.audio && game.audio.playGunshot) game.audio.playGunshot('pistol');
+      if (game.audio && game.audio.gunshot) game.audio.gunshot();
     }
   }
 
@@ -201,7 +200,7 @@ export function updateCombat(game, dt) {
       if (dx * dx + dy * dy < 30 * 30) {
         h.taken = true;
         p.hp = Math.min(p.maxHp || 100, (p.hp == null ? 100 : p.hp) + 40);
-        if (game.audio && game.audio.playPickup) game.audio.playPickup();
+        if (game.audio && game.audio.pickup) game.audio.pickup();
       }
     }
   }
