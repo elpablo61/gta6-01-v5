@@ -5,7 +5,7 @@
 // Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -32,5 +32,13 @@ console.log(`dossier.json written: ${dossier.length} bytes`);
 if (dossier.length > 1450000) {
   console.warn(`WARNING: dossier is ${dossier.length} bytes, over the 1,450,000 byte target`);
 }
-const gameBytes = statSync(join(outDir, 'game')).size;
-console.log(`game/ copied to ${outDir} (dossier ${dossier.length} bytes)`);
+// Count the game files we handed in, so the log shows the entry's size.
+import { readdirSync } from 'node:fs';
+function countFiles(dir) {
+  let n = 0;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    n += e.isDirectory() ? countFiles(join(dir, e.name)) : 1;
+  }
+  return n;
+}
+console.log(`game/ handed in: ${countFiles(join(outDir, 'game'))} files -> ${outDir}`);

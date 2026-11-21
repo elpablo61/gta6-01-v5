@@ -160,9 +160,20 @@ export const game = {
 window.game = game;
 
 async function loadSystems() {
-  for (const name of SYSTEM_MODULES) {
+  // The shots module only matters for ?shot= poses, so it is only probed
+  // when a shot is requested — otherwise a not-yet-landed shots.js would
+  // log one 404 in normal play.
+  const wanted = game.shot ? SYSTEM_MODULES : SYSTEM_MODULES.filter((n) => n !== 'shots');
+  for (const name of wanted) {
     try {
-      const mod = await import(`./${name}.js`);
+      // Probe with fetch first: a missing module then stays silent instead
+      // of logging a 404 console error from a failed dynamic import.
+      // NOTE: fetch resolves against the page URL, not this module — build
+      // the URL from import.meta.url so it points at game/src/.
+      const url = new URL(`./${name}.js`, import.meta.url);
+      const probe = await fetch(url, { method: 'HEAD' });
+      if (!probe.ok) continue;
+      const mod = await import(url.href);
       game.systems[name] = mod;
       if (typeof mod.init === 'function') mod.init(game);
     } catch {
@@ -410,11 +421,15 @@ function updateCamera(dt) {
 function updatePlaying(dt) {
   const input = game.input;
   game.time += dt;
-  // Day/night cycle.
+  // Day/night cycle. The clock runs 06:00 at timeOfDay 0; night is 18:00–06:00.
   game.timeOfDay = (game.timeOfDay + dt / CONFIG.dayLengthSec) % 1;
   const tod = game.timeOfDay;
-  game.nightFactor = tod < 0.25 || tod > 0.75 ? 1 : tod < 0.35 ? (0.35 - tod) / 0.1 : tod > 0.65 ? (tod - 0.65) / 0.1 : 0;
-  game.nightFactor = Math.max(0, Math.min(1, game.nightFactor));
+  const hourF = (tod * 24 + 6) % 24;
+  let nf = 0;
+  if (hourF >= 19 || hourF < 5) nf = 1;
+  else if (hourF >= 18) nf = hourF - 18;
+  else if (hourF < 6) nf = 6 - hourF;
+  game.nightFactor = Math.max(0, Math.min(1, nf));
 
   // Radio: R cycles stations.
   if (input.pressed('r')) {
