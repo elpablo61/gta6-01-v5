@@ -279,14 +279,19 @@ function updateWanted(dt) {
     game.addHeat(-shop.drainPerSec * dt);
   }
   // Heat decays while hiding: no police within 450 for 3 seconds — unless
-  // the helicopter spotlight is on Rook.
-  const heliOn = game.helicopter && game.helicopter.active;
+  // the helicopter spotlight is on Rook. Precise check: decay is blocked
+  // only while the spotlight is actually on Rook, not during the
+  // helicopter's 20s retreat after being shot down (it is still `active`
+  // then, but the spotlight is gone and hiding must work again).
+  const heliSpot = game.systems.helicopter && game.systems.helicopter.spotlightOnPlayer
+    ? game.systems.helicopter.spotlightOnPlayer(game)
+    : (game.helicopter && game.helicopter.active);
   let nearestCop = Infinity;
   for (const cop of game.police) {
     const d = Math.hypot(cop.x - game.player.x, cop.y - game.player.y);
     if (d < nearestCop) nearestCop = d;
   }
-  if (nearestCop > CONFIG.heatHideDistance && !heliOn && game.heat > 0) {
+  if (nearestCop > CONFIG.heatHideDistance && !heliSpot && game.heat > 0) {
     game.hideTimer += dt;
     if (game.hideTimer >= CONFIG.heatHideTime) game.addHeat(-CONFIG.heatDecayPerSec * dt);
   } else {
@@ -431,12 +436,20 @@ function updatePlaying(dt) {
   else if (hourF < 6) nf = 6 - hourF;
   game.nightFactor = Math.max(0, Math.min(1, nf));
 
-  // Radio: R cycles stations.
+  // Radio: R cycles stations. Delegate to the radio system when it is
+  // loaded — it owns game.radio.station, and its per-frame update
+  // re-syncs game.radioStation from that state, so setting the station
+  // here directly would be overwritten again the same frame.
   if (input.pressed('r')) {
-    const next = (CONFIG.radioStations.indexOf(game.radioStation) + 1) % CONFIG.radioStations.length;
-    game.radioStation = CONFIG.radioStations[next];
-    game.audio.setStation(next);
-    game.showToast(`Radio: ${game.radioStation}`);
+    if (game.systems.radio && game.systems.radio.cycleStation) {
+      const name = game.systems.radio.cycleStation(game);
+      game.showToast(`Radio: ${name}`);
+    } else {
+      const next = (CONFIG.radioStations.indexOf(game.radioStation) + 1) % CONFIG.radioStations.length;
+      game.radioStation = CONFIG.radioStations[next];
+      game.audio.setStation(next);
+      game.showToast(`Radio: ${game.radioStation}`);
+    }
   }
   // Weapons: Q cycles, 1/2/3 select.
   if (input.pressed('q')) {
@@ -486,6 +499,8 @@ function updatePlaying(dt) {
   if (game.systems.helicopter && game.systems.helicopter.update) game.systems.helicopter.update(game, dt);
   if (game.systems.garage && game.systems.garage.update) game.systems.garage.update(game, dt);
   if (game.systems.radio && game.systems.radio.update) game.systems.radio.update(game, dt);
+  if (game.systems.weapons && game.systems.weapons.update) game.systems.weapons.update(game, dt);
+  if (game.systems.hud && game.systems.hud.update) game.systems.hud.update(game, dt);
 
   updateWanted(dt);
   updateBullets(dt);
@@ -523,7 +538,11 @@ function loop(now) {
   // Pause toggle is checked BEFORE any early exit, so pause can always
   // be left again.
   if (game.input.pressed('Escape') || game.input.pressed('p')) {
-    if (game.state === 'playing' || game.state === 'paused') togglePause();
+    // Garage menu first: Esc closes the menu (and unpauses the world the
+    // menu paused) instead of resuming play with the menu still open.
+    if (game.garage && game.garage.open && game.systems.garage && game.systems.garage.closeGarageMenu) {
+      game.systems.garage.closeGarageMenu(game);
+    } else if (game.state === 'playing' || game.state === 'paused') togglePause();
   }
   if (game.state === 'playing') {
     updatePlaying(dt);

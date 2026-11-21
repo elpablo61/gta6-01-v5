@@ -1,0 +1,1 @@
+{"description":"Crescent Bay — open-world crime game. Make GTA 6 bounty entry (v5).","devDependencies":{"playwright":"^1.49.0"},"name":"gta6-01-v5","private":true,"scripts":{"playtest":"node tools/playtest.mjs","serve":"node serve.ts --port 8931","shots":"node tools/screenshots.mjs"},"type":"module","version":"1.0.0"}
