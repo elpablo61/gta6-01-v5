@@ -12,7 +12,7 @@ import { Input } from './input.js';
 import { Audio } from './audio.js';
 import { render } from './render.js';
 import { Player } from './player.js';
-import { Vehicles, driveToward, carTopSpeed } from './vehicles.js';
+import { Vehicles, driveToward, carTopSpeed, makeCar } from './vehicles.js';
 import { Traffic } from './traffic.js';
 import { Pedestrians } from './pedestrians.js';
 import { Save } from './save.js';
@@ -74,6 +74,12 @@ export const game = {
     let s = 0;
     for (let i = 0; i < t.length; i++) if (this.heat >= t[i]) s = i;
     this.stars = s;
+    // Single heat authority: missions read game.wantedStars for the
+    // escape check, and the police module's own heat copy is never
+    // drained by main.js (its updateWantedHeat is not called per frame),
+    // so wantedStars must track game.stars here — otherwise an escape
+    // mission can never see heat reach 0 after the Spray Shop drain.
+    this.wantedStars = s;
   },
 
   spawnParticles(x, y, n, color) {
@@ -305,7 +311,12 @@ const fallbackPolice = {
   spawnTimer: 0,
   arrestTimer: 0,
   update(dt) {
-    if (game.systems.police && game.systems.police.update) return; // system owns it
+    // No early return for the loaded police system: the system owns
+    // heat/arrest but never spawns units, so standing down here would
+    // leave the city with no foot cops at any wanted level. This
+    // fallback owns foot-cop spawning, chasing, arrest and the siren;
+    // the system runs its arrest check alongside (harmless — it only
+    // fires through game.onPlayerCaught, which is never set).
     const stars = game.stars;
     if (stars === 0) {
       // Cops drift away and despawn when the heat is gone.
@@ -352,6 +363,123 @@ const fallbackPolice = {
     game.audio.siren(stars > 0);
   },
 };
+
+// ---- police dispatch: patrol cars + roadblocks (NEW) ----
+// The police system owns heat/arrest but never spawns units, and the
+// fallback above only ever spawned foot cops — so a wanted chase had no
+// pursuers at all: no patrol cars, no roadblocks. This dispatcher
+// spawns them from policeBudget and drives them. Foot cops stay with
+// the fallback (it also owns arrest + the siren).
+const policeDispatch = {
+  spawnTimer: 0,
+  roadblockTimer: 0,
+  roadblockAt: null,
+  update(dt) {
+    const stars = game.stars;
+    const sys = game.systems.police;
+    const budget = sys && sys.policeBudget ? sys.policeBudget(stars)
+      : { footCops: 0, patrolCars: stars >= 2 ? Math.min(3, stars - 1) : 0, roadblocks: stars >= 4 ? stars - 3 : 0 };
+    const cars = game.cars;
+    const patrols = cars.filter((c) => c.isPolice && !c.isRoadblock);
+    const blocks = cars.filter((c) => c.isRoadblock);
+    // Heat gone: clear every pursuit unit.
+    if (stars === 0) {
+      for (const c of [...patrols, ...blocks]) cars.splice(cars.indexOf(c), 1);
+      this.roadblockAt = null;
+      return;
+    }
+    // Patrol cars: spawn until the budget is met, then chase the player
+    // along the road graph (route rebuilt when the player moves on).
+    this.spawnTimer -= dt;
+    if (patrols.length < budget.patrolCars && this.spawnTimer <= 0) {
+      this.spawnTimer = 1.5;
+      const spot = spawnOnRoadNear(game, 550 + Math.random() * 200);
+      if (spot) {
+        const car = makeCar('police', spot.x, spot.y, Math.random() * Math.PI * 2);
+        car.parked = false;
+        car.isPolice = true;
+        car.cruise = 460;
+        cars.push(car);
+      }
+    }
+    const pl = game.player;
+    for (const car of [...patrols]) {
+      if (!car.route || car.routeIndex >= car.route.length
+        || (car.routeDest && Math.hypot(pl.x - car.routeDest.x, pl.y - car.routeDest.y) > 150)) {
+        car.routeDest = { x: pl.x, y: pl.y };
+        car.route = game.world.findRoute(car.x, car.y, pl.x, pl.y);
+        car.routeIndex = 0;
+      }
+      const wp = car.route && car.route[car.routeIndex];
+      if (wp) {
+        // Brake and hold off near the Spray Shop so the player can escape.
+        const nearShop = sys && sys.patrolNearSprayShop ? sys.patrolNearSprayShop(game, car) : false;
+        const arrived = driveToward(car, wp.x, wp.y, nearShop ? 0 : 460, dt, game);
+        if (arrived || Math.hypot(wp.x - car.x, wp.y - car.y) < 70) car.routeIndex++;
+      }
+      // Despawn patrol cars that fell far behind.
+      if (Math.hypot(car.x - pl.x, car.y - pl.y) > 1500) {
+        cars.splice(cars.indexOf(car), 1);
+      }
+    }
+    // Roadblocks at 4-5 stars: parked police cars across the road ahead
+    // of the player's heading, re-placed as the player moves on.
+    this.roadblockTimer -= dt;
+    if (blocks.length < budget.roadblocks && this.roadblockTimer <= 0) {
+      this.roadblockTimer = 8;
+      placeRoadblock(game);
+    } else if (blocks.length > budget.roadblocks) {
+      for (const c of blocks.slice(budget.roadblocks)) cars.splice(cars.indexOf(c), 1);
+    }
+    if (blocks.length > 0 && this.roadblockAt
+      && Math.hypot(pl.x - this.roadblockAt.x, pl.y - this.roadblockAt.y) > 900) {
+      for (const c of blocks) cars.splice(cars.indexOf(c), 1);
+      this.roadblockAt = null;
+    }
+  },
+};
+
+// Nearest point on the road grid to (x, y): snap one axis to its nearest
+// road line and keep the other, so spawns always land on a road.
+// Returns vertical=true when the x axis was snapped (a north-south road).
+function nearestRoadPoint(game, x, y) {
+  const roads = game.world.roads;
+  let bx = roads[0], bd = Infinity;
+  for (const r of roads) { const d = Math.abs(r - x); if (d < bd) { bd = d; bx = r; } }
+  let by = roads[0], bd2 = Infinity;
+  for (const r of roads) { const d = Math.abs(r - y); if (d < bd2) { bd2 = d; by = r; } }
+  return bd <= bd2 ? { x: bx, y, vertical: true } : { x, y: by, vertical: false };
+}
+
+// A spawn point on a road at roughly `dist` from the player, in a random
+// direction (never inside a building block).
+function spawnOnRoadNear(game, dist) {
+  const p = game.player;
+  const a = Math.random() * Math.PI * 2;
+  const pt = nearestRoadPoint(game, p.x + Math.cos(a) * dist, p.y + Math.sin(a) * dist);
+  if (game.world.collideCircle(pt.x, pt.y, 30)) return null;
+  return pt;
+}
+
+// Two parked police cars across the road ahead of the player's heading.
+function placeRoadblock(game) {
+  const p = game.player;
+  const heading = p.car ? p.car.angle : 0;
+  const ahead = { x: p.x + Math.cos(heading) * 520, y: p.y + Math.sin(heading) * 520 };
+  const pt = nearestRoadPoint(game, ahead.x, ahead.y);
+  const angle = pt.vertical ? 0 : Math.PI / 2;
+  for (const off of [-32, 32]) {
+    const cx = pt.vertical ? pt.x : pt.x + off;
+    const cy = pt.vertical ? pt.y + off : pt.y;
+    if (game.world.collideCircle(cx, cy, 30)) continue;
+    const car = makeCar('police', cx, cy, angle);
+    car.parked = true;
+    car.isPolice = true;
+    car.isRoadblock = true;
+    game.cars.push(car);
+  }
+  policeDispatch.roadblockAt = pt;
+}
 
 function updateBullets(dt) {
   for (const b of [...game.bullets]) {
@@ -494,6 +622,7 @@ function updatePlaying(dt) {
   game.pedestrians.update(dt);
   fallbackPolice.update(dt);
   if (game.systems.police && game.systems.police.update) game.systems.police.update(game, dt);
+  policeDispatch.update(dt);
   if (game.systems.combat && game.systems.combat.update) game.systems.combat.update(game, dt);
   if (game.systems.missions && game.systems.missions.update) game.systems.missions.update(game, dt);
   if (game.systems.helicopter && game.systems.helicopter.update) game.systems.helicopter.update(game, dt);

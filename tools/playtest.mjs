@@ -198,6 +198,18 @@ async function runEdge() {
     return { active: g.helicopter.active, spot: g.systems.helicopter.spotlightOnPlayer(g) };
   });
   t('helicopter up at 3 stars with spotlight', heliUp.active && heliUp.spot === true, JSON.stringify(heliUp));
+
+  // 2b. Police dispatch: foot cops + patrol cars actually spawn at 3 stars.
+  await sleep(4000);
+  const dispatch = await page.evaluate(() => {
+    const g = window.game;
+    return {
+      foot: g.police.length,
+      patrol: (g.cars || []).filter((c) => c.isPolice && !c.isRoadblock).length,
+      stars: g.stars,
+    };
+  });
+  t('police dispatch spawns foot cops + patrol cars at 3 stars', dispatch.foot >= 2 && dispatch.patrol >= 1, JSON.stringify(dispatch));
   // Shoot it down: damage until the spotlight leaves the player.
   await page.evaluate(() => {
     const g = window.game;
@@ -209,12 +221,28 @@ async function runEdge() {
     return { active: g.helicopter.active, spot: g.systems.helicopter.spotlightOnPlayer(g), heat: g.heat };
   });
   t('shot-down heli retreats: spotlight off', retreat.spot === false, JSON.stringify(retreat));
-  // Heat must decay during the retreat (no cops nearby: teleport to a quiet corner).
-  await page.evaluate(() => { const g = window.game; g.player.x = 200; g.player.y = 200; g.police = []; });
-  const heatBefore = (await snap(page)).heat;
-  await sleep(5000);
-  const heatAfter = (await snap(page)).heat;
-  t('heat decays during heli retreat', heatAfter < heatBefore, `${heatBefore} → ${heatAfter}`);
+  // Heat must decay during the retreat. Foot cops now spawn and chase,
+  // so a plain "teleport away and wait" no longer stays cop-free: the
+  // in-page probe hops between far corners (leaving every cop behind)
+  // and clears the cop list each hop, so the hide timer can accumulate
+  // and the decay gate — not the spotlight — is what is measured.
+  const decay = await page.evaluate(async () => {
+    const g = window.game;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (g.player.inCar) g.vehicles.exitCar();
+    const h0 = g.heat;
+    let maxHide = 0;
+    const corners = [[200, 200], [3000, 3000], [200, 3000], [3000, 200]];
+    for (let i = 0; i < 12; i++) {
+      await sleep(500);
+      g.police = [];
+      const c = corners[i % corners.length];
+      g.player.x = c[0]; g.player.y = c[1];
+      if (g.hideTimer > maxHide) maxHide = g.hideTimer;
+    }
+    return { h0, h1: g.heat, maxHide, spot: g.systems.helicopter.spotlightOnPlayer(g) };
+  });
+  t('heat decays during heli retreat', decay.h1 < decay.h0 - 5 && decay.maxHide >= 3 && decay.spot === false, JSON.stringify(decay));
 
   // 3. Weapon crate pickup FIRST (before any giveWeapon): stand on a
   // world crate spot for a weapon not yet owned, owned grows.
