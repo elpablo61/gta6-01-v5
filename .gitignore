@@ -1,0 +1,6 @@
+# Build output and dependencies — generated, never committed.
+out/
+output/
+node_modules/
+.DS_Store
+*.log
