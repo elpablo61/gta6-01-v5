@@ -117,42 +117,32 @@ export function nearestEnemy(game) {
 export function damagePlayer(game, amount) {
   const p = game.player;
   if (!p) return;
+  // The base Player has takeDamage (hurt cooldown + death flag).
+  if (typeof p.takeDamage === 'function') { p.takeDamage(amount, game); return; }
   p.hp = Math.max(0, (p.hp == null ? 100 : p.hp) - amount);
   if (game.hud) game.hud.damageFlash = 0.35;
   if (p.hp <= 0 && game.onPlayerDown) game.onPlayerDown();
 }
 
-// Resolve player bullets against enemies, cops and the helicopter.
-// Called from the main loop after weapons.updateBullets.
+// Resolve player bullets against the HELICOPTER only. main.js's
+// updateBullets already resolves player bullets against enemies and
+// cops (and moves every bullet) — resolving them here too would deal
+// double damage, so this file never touches enemy/cop hits.
 export function resolvePlayerBullets(game) {
-  const c = ensureCombat(game);
   const bullets = game.bullets || [];
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
-    if (b.from !== 'player') continue;
-    let hit = false;
-    for (const e of c.enemies) {
-      if (!e.alive) continue;
-      const dx = b.x - e.x, dy = b.y - e.y;
-      if (dx * dx + dy * dy < 26 * 26) {
-        e.hp -= b.damage;
-        if (e.hp <= 0) {
-          e.alive = false;
-          if (game.audio && game.audio.pickup) game.audio.pickup();
-        }
-        hit = true;
-        break;
-      }
-    }
-    if (!hit && game.helicopter && game.helicopter.state === 'shadowing') {
+    if (!b.fromPlayer) continue;
+    if (game.helicopter && game.helicopter.state === 'shadowing') {
       const h = game.helicopter;
       const dx = b.x - h.x, dy = b.y - h.y;
       if (dx * dx + dy * dy < 46 * 46) {
-        if (game.damageHelicopter) game.damageHelicopter(game, b.damage);
-        hit = true;
+        const mod = (game.systems && game.systems.helicopter) || null;
+        if (mod && mod.damageHelicopter) mod.damageHelicopter(game, b.damage);
+        else if (game.damageHelicopter) game.damageHelicopter(game, b.damage);
+        bullets.splice(i, 1);
       }
     }
-    if (hit) bullets.splice(i, 1);
   }
 }
 
@@ -179,27 +169,19 @@ export function updateCombat(game, dt) {
     if (d < ENEMY_DEFS.grunt.range && !p.inCar && t - e.lastShotAt > ENEMY_DEFS.grunt.fireInterval) {
       e.lastShotAt = t;
       const a = e.angle + (Math.random() - 0.5) * 0.14;
-      c.enemyBullets.push({
-        x: e.x + Math.cos(a) * 20, y: e.y + Math.sin(a) * 20, angle: a,
-        vx: Math.cos(a) * 620, vy: Math.sin(a) * 620,
-        damage: ENEMY_DEFS.grunt.damage, life: 1.2,
+      // Main-loop bullet shape; pushed to game.bullets so main.js moves
+      // it and resolves the hit on the player (fromPlayer: false).
+      (game.bullets = game.bullets || []).push({
+        x: e.x + Math.cos(a) * 20, y: e.y + Math.sin(a) * 20,
+        angle: a, speed: 620,
+        damage: ENEMY_DEFS.grunt.damage, range: 700, travelled: 0,
+        fromPlayer: false,
       });
       if (game.audio && game.audio.gunshot) game.audio.gunshot();
     }
   }
-
-  // Enemy bullets move and can hit the player.
-  for (let i = c.enemyBullets.length - 1; i >= 0; i--) {
-    const b = c.enemyBullets[i];
-    b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
-    let dead = b.life <= 0;
-    if (!dead && !p.inCar) {
-      const dx = b.x - p.x, dy = b.y - p.y;
-      if (dx * dx + dy * dy < 18 * 18) { damagePlayer(game, b.damage); dead = true; }
-    }
-    if (dead) c.enemyBullets.splice(i, 1);
-  }
-  game.enemyBullets = c.enemyBullets;
+  // Helicopter hits are resolved here (main.js does not know the heli).
+  resolvePlayerBullets(game);
   game.enemies = c.enemies;
 
   // Health pickups in the arena.
@@ -214,6 +196,15 @@ export function updateCombat(game, dt) {
       }
     }
   }
+}
+
+// main.js calls update(game, dt) on every loaded system.
+export function update(game, dt) {
+  updateCombat(game, dt);
+}
+
+export function init(game) {
+  ensureCombat(game);
 }
 
 export function drawCombat(ctx, camera, game) {

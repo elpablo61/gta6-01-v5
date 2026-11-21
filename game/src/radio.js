@@ -100,9 +100,26 @@ export function equalizerLevels(game, at) {
   return levels;
 }
 
-export function updateRadio(game, input) {
+// main.js owns the R key (it cycles the station itself and calls
+// Audio.setStation) — this update only keeps game.radioStation in sync
+// with the Audio instance, so the HUD never shows a stale station.
+// Cycling here too would skip a station on every press.
+export function updateRadio(game, dt) {
+  void dt;
   ensureRadio(game);
-  if (input && typeof input.pressed === 'function' && input.pressed('r')) {
-    cycleStation(game);
+  if (game.audio && typeof game.audio.stationIndex === 'number') {
+    const idx = game.audio.stationIndex;
+    if (idx !== game.radio.station) game.radio.station = idx;
   }
+  game.radioStation = RADIO_STATIONS[game.radio.station].name;
+}
+
+// main.js calls update(game, dt) on every loaded system.
+export function update(game, dt) {
+  updateRadio(game, dt);
+}
+
+export function init(game) {
+  ensureRadio(game);
+  game.radioStation = RADIO_STATIONS[game.radio.station].name;
 }

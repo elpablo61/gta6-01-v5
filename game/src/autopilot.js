@@ -21,8 +21,13 @@
 // Anti-freeze (spec §9.1): the on-foot car search falls back to
 // walking to the courier's nearest road point if no car is found within
 // range (never walk at a moving target forever).
+// Driving itself uses vehicles.js driveToward (the proven steering
+// rules: stop-and-rotate for turns sharper than ~52°, slow before
+// sharp turns, reverse to unwedge); entering/exiting uses
+// vehicles.enterCar/exitCar when present so theft heat is counted.
 
 import { CONFIG } from './config.js';
+import { driveToward, carTopSpeed } from './vehicles.js';
 
 export const AUTOPILOT_DEFS = {
   walkSpeed: 170,
@@ -49,9 +54,6 @@ export function createAutopilotState() {
     walkTarget: null,     // memoized on-foot target
     walkTargetFor: null,  // the goal the walk target was built for
     lastShotAt: -99,
-    stuckTimer: 0,
-    lastPos: null,
-    reverseTimer: 0,
     mode: 'idle',         // idle | goto | chase | escape | shootout | garage
   };
 }
@@ -67,15 +69,27 @@ function now(game) {
   return 0;
 }
 
-function angleDiff(a, b) {
-  let d = a - b;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
+// A sibling system, loaded as game.systems[name] by main.js, or a
+// same-named helper the harness stubs directly on `game`.
+export function sys(game, name) {
+  if (game.systems && game.systems[name]) return game.systems[name];
+  return null;
 }
 
-// Route to a target, rebuilt only when the target moved >100 from the
-// route's recorded destination (never every frame).
+function callSys(game, name, fn, ...args) {
+  const mod = sys(game, name);
+  if (mod && typeof mod[fn] === 'function') return mod[fn](game, ...args);
+  if (typeof game[fn] === 'function') return game[fn](game, ...args);
+  return undefined;
+}
+
+// Top speed including engine upgrades; tolerates bare car objects
+// (e.g. in tests) that lack the upgrades field makeCar normally adds.
+function topSpeedOf(car) {
+  if (!car) return 0;
+  if (car.upgrades) return carTopSpeed(car);
+  return car.topSpeed || 0;
+}
 export function routeTo(game, tx, ty) {
   const auto = ensureAutopilot(game);
   const world = game.world;
@@ -92,77 +106,24 @@ export function routeTo(game, tx, ty) {
   return auto.route;
 }
 
-// Drive a car toward a target point. Steering is radius-based with the
-// proven rules: stop fully and rotate in place for turns sharper than
-// ~52° (|diff| > 0.9), slow before sharp turns, reverse straight to
-// unwedge when stuck, slide along walls via world.resolveCircle.
+// Drive the player's car toward a target via the road graph, using
+// vehicles.js driveToward for the actual steering. The final leg goes
+// straight to the exact target (static landmarks only — never for the
+// moving courier). Returns distance to the final target.
 export function driveCarToward(game, car, tx, ty, cruise, dt) {
-  const world = game.world;
-  const auto = ensureAutopilot(game);
   const route = routeTo(game, tx, ty);
+  const auto = ensureAutopilot(game);
   let target = { x: tx, y: ty };
-  // Follow route waypoints; the final leg goes straight to the exact
-  // target (static landmarks only — never for the moving courier).
-  const isMovingTarget = game.mission && game.mission.id === 'm2'
-    && game.courier && Math.hypot(tx - game.courier.x, ty - game.courier.y) < 5;
-  if (route && route.length > 0) {
-    const wp = route[Math.min(auto.routeIndex, route.length - 1)];
+  if (route && route.length > 0 && auto.routeIndex < route.length) {
+    const wp = route[auto.routeIndex];
     const dWp = Math.hypot(wp.x - car.x, wp.y - car.y);
-    if (dWp < AUTOPILOT_DEFS.waypointAccept) {
-      auto.routeIndex += 1;
-      if (auto.routeIndex >= route.length) {
-        target = isMovingTarget ? { x: tx, y: ty } : { x: tx, y: ty };
-      }
-    } else {
-      target = wp;
-    }
-    if (auto.routeIndex >= route.length && !isMovingTarget) target = { x: tx, y: ty };
+    if (dWp < AUTOPILOT_DEFS.waypointAccept) auto.routeIndex += 1;
+    if (auto.routeIndex < route.length) target = route[auto.routeIndex];
+    else target = { x: tx, y: ty };
   }
-  const dx = target.x - car.x, dy = target.y - car.y;
-  const dist = Math.hypot(dx, dy);
-  const want = Math.atan2(dy, dx);
-  const diff = angleDiff(want, car.angle);
-  const speed = Math.abs(car.speed || 0);
-
-  // Stuck detection: barely moving while trying to drive → reverse.
-  if (auto.lastPos) {
-    const moved = Math.hypot(car.x - auto.lastPos.x, car.y - auto.lastPos.y);
-    auto.stuckTimer = moved < 6 * dt + 0.5 && speed < 30 ? auto.stuckTimer + dt : 0;
-  }
-  auto.lastPos = { x: car.x, y: car.y };
-  if (auto.stuckTimer > 1.2) {
-    auto.reverseTimer = 0.8;
-    auto.stuckTimer = 0;
-  }
-  if (auto.reverseTimer > 0) {
-    auto.reverseTimer -= dt;
-    car.speed = -90;
-    car.x -= Math.cos(car.angle) * 90 * dt;
-    car.y -= Math.sin(car.angle) * 90 * dt;
-    return dist;
-  }
-
-  if (Math.abs(diff) > 0.9) {
-    // Sharp turn: stop fully, rotate in place, then drive straight.
-    car.speed = 0;
-    car.angle += Math.max(-2.6 * dt, Math.min(2.6 * dt, diff));
-    return dist;
-  }
-  // Slow before sharp junction turns.
-  const turnSlow = Math.abs(diff) > 0.5 ? 0.55 : 1;
-  const targetSpeed = Math.min(cruise, (car.topSpeed || cruise)) * turnSlow;
-  // Crawl-forward turns at low speed keep turn authority.
-  const accel = car.accel || 300;
-  if (speed < targetSpeed) car.speed = Math.min(targetSpeed, speed + accel * dt);
-  else car.speed = Math.max(targetSpeed, speed - (car.brake || 500) * dt * (car.brakeBonus || 1));
-  car.angle += Math.max(-2.4 * dt, Math.min(2.4 * dt, diff)) * (0.5 + 0.5 * Math.min(1, speed / 120 + 0.2));
-  car.x += Math.cos(car.angle) * car.speed * dt;
-  car.y += Math.sin(car.angle) * car.speed * dt;
-  if (world) {
-    world.resolveCircle(car, 24);
-    world.clampToWorld(car, 24);
-  }
-  return dist;
+  driveToward(car, target.x, target.y, cruise, dt, game);
+  if (game.player) { game.player.x = car.x; game.player.y = car.y; }
+  return Math.hypot(tx - car.x, ty - car.y);
 }
 
 // Walk on foot toward a target: road graph to the nearest road point,
@@ -178,8 +139,7 @@ export function walkToward(game, tx, ty, dt) {
   if (goalMoved || !auto.walkTarget) {
     auto.walkTargetFor = { x: tx, y: ty };
     if (world) {
-      const rp = world.nearestRoadPoint(tx, ty);
-      auto.walkTarget = rp;
+      auto.walkTarget = world.nearestRoadPoint(tx, ty);
     } else {
       auto.walkTarget = { x: tx, y: ty };
     }
@@ -191,10 +151,13 @@ export function walkToward(game, tx, ty, dt) {
   const d = Math.hypot(dx, dy);
   if (d < 4) return Math.hypot(tx - p.x, ty - p.y);
   const speed = d > 200 ? AUTOPILOT_DEFS.sprintSpeed : AUTOPILOT_DEFS.walkSpeed;
-  p.x += (dx / d) * speed * dt;
-  p.y += (dy / d) * speed * dt;
+  const nx = p.x + (dx / d) * speed * dt;
+  const ny = p.y + (dy / d) * speed * dt;
+  // Move axis by axis so the player slides along walls (same as Player).
+  if (!world || !world.collideCircle(nx, p.y, 14)) p.x = nx;
+  if (!world || !world.collideCircle(p.x, ny, 14)) p.y = ny;
   p.aim = Math.atan2(dy, dx);
-  if (world) world.resolveCircle(p, 14);
+  p.speed = speed;
   return Math.hypot(tx - p.x, ty - p.y);
 }
 
@@ -207,8 +170,8 @@ export function fasterParkedCarNearby(game, maxDist, minTopSpeed) {
   const py = p.inCar && p.car ? p.car.y : p.y;
   for (const c of cars) {
     if (c.isPlayer || c === p.car || c.type === 'police') continue;
-    if (c.parked === false) continue; // only parked cars can be taken cleanly
-    const top = c.topSpeed || 0;
+    if (!c.parked) continue; // only parked cars can be taken cleanly
+    const top = topSpeedOf(c);
     if (top < minTopSpeed) continue;
     const d = Math.hypot(c.x - px, c.y - py);
     if (d < maxDist && d < bestD) { bestD = d; best = c; }
@@ -219,15 +182,14 @@ export function fasterParkedCarNearby(game, maxDist, minTopSpeed) {
 export function enterCar(game, car) {
   const p = game.player;
   if (!p || !car) return false;
+  if (game.vehicles && typeof game.vehicles.enterCar === 'function') {
+    return game.vehicles.enterCar(car);
+  }
   p.inCar = true;
   p.car = car;
   car.isPlayer = true;
   car.parked = false;
   p.x = car.x; p.y = car.y;
-  if (game.applyUpgradesToCar && game.garage) {
-    const up = game.garage.cars ? game.garage.cars[car.id] : null;
-    if (up) game.applyUpgradesToCar(car, up);
-  }
   if (game.audio && game.audio.door) game.audio.door();
   return true;
 }
@@ -235,6 +197,10 @@ export function enterCar(game, car) {
 export function exitCar(game) {
   const p = game.player;
   if (!p || !p.car) return false;
+  if (game.vehicles && typeof game.vehicles.exitCar === 'function') {
+    game.vehicles.exitCar();
+    return true;
+  }
   const car = p.car;
   car.isPlayer = false;
   p.inCar = false;
@@ -249,12 +215,11 @@ export function exitCar(game) {
 // target forever).
 export function goToOnFoot(game, tx, ty, dt, chase) {
   const p = game.player;
-  const auto = ensureAutopilot(game);
   const cars = game.cars || [];
   // Nearest parked car of any kind.
   let best = null, bestD = Infinity;
   for (const c of cars) {
-    if (c.isPlayer || c.type === 'police' || c.parked === false) continue;
+    if (c.isPlayer || c.type === 'police' || !c.parked) continue;
     const d = Math.hypot(c.x - p.x, c.y - p.y);
     if (d < bestD) { bestD = d; best = c; }
   }
@@ -277,7 +242,7 @@ export function shootoutStep(game, dt) {
   const p = game.player;
   const auto = ensureAutopilot(game);
   const t = now(game);
-  const nearest = game.nearestEnemy ? game.nearestEnemy(game) : null;
+  const nearest = callSys(game, 'combat', 'nearestEnemy');
   // Low ammo: go to the nearest arena ammo pickup first.
   const ammo = game.weapons ? game.weapons.ammo[game.weapons.current] : 99;
   if (ammo <= AUTOPILOT_DEFS.lowAmmo) {
@@ -291,7 +256,9 @@ export function shootoutStep(game, dt) {
     if (best) { walkToward(game, best.x, best.y, dt); return 'ammo'; }
   }
   // m10: pick up a better weapon crate in the arena before engaging.
-  if (game.mission && game.mission.id === 'm10' && game.weapons && !game.weapons.owned.smg) {
+  const owned = game.weapons ? game.weapons.owned : [];
+  const ownsSmg = Array.isArray(owned) ? owned.includes('smg') : !!owned.smg;
+  if (game.mission && game.mission.id === 'm10' && !ownsSmg) {
     const crates = (game.crates || []).filter((c) => !c.taken);
     let best = null, bestD = Infinity;
     for (const c of crates) {
@@ -309,7 +276,7 @@ export function shootoutStep(game, dt) {
   }
   if (dist < 420 && t - auto.lastShotAt >= AUTOPILOT_DEFS.burstInterval) {
     auto.lastShotAt = t;
-    if (game.tryFire) game.tryFire(game, aim);
+    callSys(game, 'weapons', 'tryFire', aim);
   }
   return 'fighting';
 }
@@ -326,24 +293,26 @@ export function updateAutopilot(game, dt) {
 
   // 1. Dialog first: accept the mission before any car search (§9.1a).
   if (m.dialogOpen) {
-    if (game.acceptDialog) game.acceptDialog(game);
+    callSys(game, 'missions', 'acceptDialog');
     return 'accepted-dialog';
   }
   if (!m.active) {
-    if (game.offerMission) game.offerMission(game);
+    callSys(game, 'missions', 'offerMission');
     return 'offering';
   }
 
-  const target = game.objectiveTarget || (game.missionTarget ? game.missionTarget(game) : null);
+  const target = game.objectiveTarget || null;
   const isChase = m.id === 'm2';
   const isShootout = (m.id === 'm8' || m.id === 'm10' || m.id === 'm12') && m.stage === 0;
   const isGarage = m.id === 'm11' && m.stage === 0;
 
   // 2. Garage menu open: buy the cheapest upgrade, close, continue.
+  // The menu was opened with {pause:false}, so buy + close here in the
+  // same frame — never wait behind a paused world.
   if (game.garage && game.garage.open) {
-    const cheapest = game.cheapestUpgrade ? game.cheapestUpgrade(game, p.car) : null;
-    if (cheapest && game.buyUpgrade) game.buyUpgrade(game, cheapest.kind);
-    if (game.closeGarageMenu) game.closeGarageMenu(game);
+    const cheapest = callSys(game, 'garage', 'cheapestUpgrade', p.car);
+    if (cheapest) callSys(game, 'garage', 'buyUpgrade', cheapest.kind);
+    callSys(game, 'garage', 'closeGarageMenu');
     return 'garage-bought';
   }
 
@@ -353,16 +322,18 @@ export function updateAutopilot(game, dt) {
     return shootoutStep(game, dt);
   }
 
-  // 4. Garage stage: drive there, open the menu.
+  // 4. Garage stage: drive there, open the menu (no pause), buy, close.
   if (isGarage && target) {
     if (!p.inCar) {
-      const r = goToOnFoot(game, target.x, target.y, dt, false);
-      return r;
+      return goToOnFoot(game, target.x, target.y, dt, false);
     }
     const d = driveCarToward(game, p.car, target.x, target.y, AUTOPILOT_DEFS.goToCruise, dt);
     if (d < CONFIG.garage.radius * 0.8) {
-      if (game.openGarageMenu) game.openGarageMenu(game);
-      return 'garage-open';
+      callSys(game, 'garage', 'openGarageMenu', { pause: false });
+      const cheapest = callSys(game, 'garage', 'cheapestUpgrade', p.car);
+      if (cheapest) callSys(game, 'garage', 'buyUpgrade', cheapest.kind);
+      callSys(game, 'garage', 'closeGarageMenu');
+      return 'garage-bought';
     }
     return 'driving-garage';
   }
@@ -376,7 +347,7 @@ export function updateAutopilot(game, dt) {
   // current car is slow (theft adds heat — never for a marginal gain).
   const slowTop = isChase ? AUTOPILOT_DEFS.chaseSlowTopSpeed : AUTOPILOT_DEFS.slowCarTopSpeed;
   const nearDist = isChase ? AUTOPILOT_DEFS.chaseFastCarNear : AUTOPILOT_DEFS.fastCarNear;
-  const currentTop = p.car.topSpeed || 0;
+  const currentTop = topSpeedOf(p.car);
   if (currentTop < slowTop) {
     const faster = fasterParkedCarNearby(game, nearDist, currentTop + 60);
     if (faster) {
@@ -387,4 +358,20 @@ export function updateAutopilot(game, dt) {
   const cruise = isChase ? AUTOPILOT_DEFS.chaseCruise : AUTOPILOT_DEFS.goToCruise;
   driveCarToward(game, p.car, target.x, target.y, cruise, dt);
   return isChase ? 'chasing' : 'driving';
+}
+
+// main.js calls update(game, dt) and uses the return value as
+// "the autopilot drove this frame" (manual driving is skipped then).
+// Only real movement counts — never 'off' / 'offering' / 'no-target'.
+export function update(game, dt) {
+  const status = updateAutopilot(game, dt);
+  return [
+    'driving', 'chasing', 'driving-garage', 'walking-to-car',
+    'walking-to-target', 'swapping-car', 'fighting', 'ammo', 'crate',
+    'garage-bought', 'garage-open',
+  ].includes(status);
+}
+
+export function init(game) {
+  ensureAutopilot(game);
 }

@@ -64,7 +64,9 @@ export const ARENA_CRATE_SPOTS = {
 
 export function createWeaponsState() {
   return {
-    owned: { pistol: true, smg: false, shotgun: false },
+    // owned is an ARRAY — the base game.weapons shape (main.js calls
+    // .includes/.indexOf on it, and Save stores it as an array).
+    owned: ['pistol'],
     current: 'pistol',
     ammo: { pistol: WEAPON_DEFS.pistol.startAmmo, smg: 0, shotgun: 0 },
     lastShotAt: -99,
@@ -74,10 +76,23 @@ export function createWeaponsState() {
 
 export function ensureWeapons(game) {
   if (!game.weapons) game.weapons = createWeaponsState();
+  // Normalize: newWorld() resets game.weapons to the base shape; an
+  // older object-shaped owned (never written by this file) is converted.
+  if (game.weapons.owned && !Array.isArray(game.weapons.owned)) {
+    game.weapons.owned = Object.keys(game.weapons.owned).filter((k) => game.weapons.owned[k]);
+  }
+  if (!game.weapons.ammo) game.weapons.ammo = { pistol: 48, smg: 0, shotgun: 0 };
+  if (game.weapons.lastShotAt == null) game.weapons.lastShotAt = -99;
   if (!game.crates) game.crates = WORLD_CRATE_SPOTS.map((s) => ({ ...s, taken: false }));
   if (!game.ammoPickups) game.ammoPickups = [];
   if (!game.bullets) game.bullets = [];
   return game.weapons;
+}
+
+export function ownsWeapon(game, id) {
+  ensureWeapons(game);
+  const owned = game.weapons.owned;
+  return Array.isArray(owned) ? owned.includes(id) : !!owned[id];
 }
 
 export function currentWeapon(game) {
@@ -94,7 +109,7 @@ export function currentAmmo(game) {
 // the weapon is simply held for later — switching itself never blocks.
 export function switchWeapon(game, id) {
   ensureWeapons(game);
-  if (!game.weapons.owned[id]) return false;
+  if (!ownsWeapon(game, id)) return false;
   if (game.weapons.current === id) return false;
   game.weapons.current = id;
   game.weapons.lastSwitchAt = now(game);
@@ -104,7 +119,7 @@ export function switchWeapon(game, id) {
 
 export function cycleWeapon(game) {
   ensureWeapons(game);
-  const owned = WEAPON_ORDER.filter((id) => game.weapons.owned[id]);
+  const owned = WEAPON_ORDER.filter((id) => ownsWeapon(game, id));
   if (owned.length < 2) return false;
   const i = owned.indexOf(game.weapons.current);
   return switchWeapon(game, owned[(i + 1) % owned.length]);
@@ -114,8 +129,8 @@ export function giveWeapon(game, id, ammo) {
   ensureWeapons(game);
   const def = WEAPON_DEFS[id];
   if (!def) return false;
-  const had = !!game.weapons.owned[id];
-  game.weapons.owned[id] = true;
+  const had = ownsWeapon(game, id);
+  if (!had) game.weapons.owned.push(id);
   game.weapons.ammo[id] = Math.min(
     def.maxAmmo,
     (game.weapons.ammo[id] || 0) + (ammo == null ? def.crateAmmo : ammo),
@@ -154,11 +169,12 @@ export function tryFire(game, aimAngle) {
   for (let i = 0; i < def.pellets; i++) {
     const spread = (Math.random() - 0.5) * 2 * def.spread;
     const a = angle + spread;
+    // Main-loop bullet shape (main.js updateBullets moves + resolves
+    // these): angle/speed/travelled/range/fromPlayer.
     game.bullets.push({
-      x: mx, y: my, angle: a,
-      vx: Math.cos(a) * def.bulletSpeed, vy: Math.sin(a) * def.bulletSpeed,
+      x: mx, y: my, angle: a, speed: def.bulletSpeed,
       damage: def.damage, range: def.range, travelled: 0,
-      from: 'player', life: def.range / def.bulletSpeed, color: def.color,
+      fromPlayer: true,
     });
   }
   if (game.audio && game.audio.gunshot) game.audio.gunshot();
@@ -208,32 +224,51 @@ export function updateWeaponPickups(game) {
 }
 
 // Advance bullets; combat.js resolves hits against enemies/cops/helicopter.
+// Standalone bullet motion (main.js moves bullets itself each frame,
+// so update() below does NOT call this — it is for tests / reuse).
 export function updateBullets(game, dt) {
   ensureWeapons(game);
   const list = game.bullets;
   for (let i = list.length - 1; i >= 0; i--) {
     const b = list[i];
-    b.x += b.vx * dt; b.y += b.vy * dt;
-    b.travelled = (b.travelled || 0) + Math.hypot(b.vx, b.vy) * dt;
-    b.life -= dt;
-    if (b.life <= 0 || b.travelled >= b.range || b.x < 0 || b.y < 0 || b.x > 3200 || b.y > 3200) {
+    const sp = b.speed || 0;
+    b.x += Math.cos(b.angle) * sp * dt;
+    b.y += Math.sin(b.angle) * sp * dt;
+    b.travelled = (b.travelled || 0) + sp * dt;
+    if (b.travelled >= b.range || b.x < 0 || b.y < 0 || b.x > 3200 || b.y > 3200) {
       list.splice(i, 1);
     }
   }
 }
 
-export function updateWeapons(game, dt, input) {
-  ensureWeapons(game);
-  // `input` is the base Input class: pressed(key) / down(key), keys are
-  // lowercase single chars, justPressed is cleared at end of frame.
-  if (input && typeof input.pressed === 'function') {
-    if (input.pressed('1')) switchWeapon(game, 'pistol');
-    if (input.pressed('2')) switchWeapon(game, 'smg');
-    if (input.pressed('3')) switchWeapon(game, 'shotgun');
-    if (input.pressed('q')) cycleWeapon(game);
+// Player.shoot calls systems.weapons.fire(game): fire the current
+// weapon at the player's aim, honouring the fire rate. Uses
+// game.weapons ammo (the source of truth) and mirrors it onto
+// player.ammo so the base HUD/pickup code stays in sync.
+export function fire(game, aimAngle) {
+  const ok = tryFire(game, aimAngle);
+  const p = game.player;
+  if (p) {
+    p.fireCooldown = currentWeapon(game).fireInterval;
+    p.ammo = currentAmmo(game);
   }
+  return ok;
+}
+
+export function updateWeapons(game, dt) {
+  ensureWeapons(game);
+  // main.js owns the 1/2/3/Q keys and the bullet motion — this system
+  // only handles world pickups (crates + ammo) each frame.
   updateWeaponPickups(game);
-  updateBullets(game, dt);
+}
+
+// main.js calls update(game, dt) on every loaded system.
+export function update(game, dt) {
+  updateWeapons(game, dt);
+}
+
+export function init(game) {
+  ensureWeapons(game);
 }
 
 export function drawWeaponCrates(ctx, camera, game) {

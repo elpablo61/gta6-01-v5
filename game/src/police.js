@@ -59,17 +59,37 @@ export function ensurePolice(game) {
   if (!game.policeState) game.policeState = createPoliceState();
   if (game.heat == null) game.heat = game.policeState.heat;
   if (game.wantedStars == null) game.wantedStars = game.policeState.stars;
-  // render.js reads game.police as the foot-cop array; keep it mirrored.
-  game.police = game.policeState.footCops;
+  // game.police is the foot-cop ARRAY (render.js + main.js read it, and
+  // the fallback police in main.js pushes cops into it). Adopt it as
+  // this system's foot-cop list — but only when its identity changes
+  // (a new world resets it); re-adopting every call would clobber
+  // direct footCops updates.
+  if (Array.isArray(game.police)) {
+    if (game.policeState._policeArray !== game.police) {
+      game.policeState._policeArray = game.police;
+      game.policeState.footCops = game.police;
+    }
+  } else {
+    game.police = game.policeState.footCops;
+    game.policeState._policeArray = game.police;
+  }
   return game.policeState;
+}
+
+function syncStars(game, pol) {
+  game.heat = pol.heat;
+  game.wantedStars = pol.stars;
+  // main.js keeps game.stars via _updateStars — that is the authority
+  // render.js and the helicopter read.
+  if (typeof game._updateStars === 'function') game._updateStars();
+  else game.stars = pol.stars;
 }
 
 export function addHeat(game, amount) {
   const pol = ensurePolice(game);
   pol.heat = Math.max(0, Math.min(100, pol.heat + amount));
   pol.stars = starsForHeat(pol.heat);
-  game.heat = pol.heat;
-  game.wantedStars = pol.stars;
+  syncStars(game, pol);
   return pol.stars;
 }
 
@@ -77,8 +97,7 @@ export function setHeat(game, value) {
   const pol = ensurePolice(game);
   pol.heat = Math.max(0, Math.min(100, value));
   pol.stars = starsForHeat(pol.heat);
-  game.heat = pol.heat;
-  game.wantedStars = pol.stars;
+  syncStars(game, pol);
   return pol.stars;
 }
 
@@ -151,8 +170,8 @@ export function updateArrest(game, dt) {
   const pol = ensurePolice(game);
   const p = game.player;
   if (!p || p.inCar) return false;
-  const speed = Math.hypot(p.vx || 0, p.vy || 0);
-  const running = speed > 140;
+  const speed = p.speed || 0;
+  const running = speed > 100; // base Player: sprinting is 260, walking 170
   for (const c of pol.footCops) {
     const d = Math.hypot(c.x - p.x, c.y - p.y);
     if (d < POLICE_DEFS.arrestRadius && !running) {
@@ -177,7 +196,9 @@ export function patrolNearSprayShop(game, car) {
 
 export function updatePolice(game, dt) {
   ensurePolice(game);
-  updateWantedHeat(game, dt);
+  // Heat decay / Spray Shop drain live in main.js updateWanted (it
+  // already checks the helicopter spotlight via helicopter.active) —
+  // this system must NOT decay heat again or it drains twice as fast.
   updateArrest(game, dt);
   // Foot cops walk toward the player when wanted; otherwise hold still.
   const p = game.player;
@@ -193,6 +214,15 @@ export function updatePolice(game, dt) {
       }
     }
   }
+}
+
+// main.js calls update(game, dt) on every loaded system.
+export function update(game, dt) {
+  updatePolice(game, dt);
+}
+
+export function init(game) {
+  ensurePolice(game);
 }
 
 export function drawPolice(ctx, camera, game) {

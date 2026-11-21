@@ -12,6 +12,21 @@
 // the autopilot can press E to accept; see acceptDialog().
 
 import { CONFIG } from './config.js';
+import { autosave as saveAutosave } from './save.js';
+
+// A sibling system, loaded as game.systems[name] by main.js, or a
+// same-named helper the harness stubs directly on `game`.
+function sys(game, name) {
+  if (game.systems && game.systems[name]) return game.systems[name];
+  return null;
+}
+
+function callSys(game, name, fn, ...args) {
+  const mod = sys(game, name);
+  if (mod && typeof mod[fn] === 'function') return mod[fn](game, ...args);
+  if (typeof game[fn] === 'function') return game[fn](game, ...args);
+  return undefined;
+}
 
 export const MISSION_ARC = [
   { id: 'm1', name: 'First Job', fixer: 'Mara', hook: 'Rook, easy money. Grab the package at the market, drop it downtown.', reward: 400, timeLimit: 300, type: 'drive', stages: ['pickup', 'deliver'] },
@@ -89,18 +104,32 @@ export function offerMission(game) {
   if (!def || m.active) return false;
   m.dialogOpen = true;
   m.dialogMission = def.id;
-  game.dialog = { open: true, kind: 'mission', mission: def.id, text: `${def.fixer}: ${def.hook}` };
-  if (game.hud) game.hud.message = `${def.fixer}: ${def.name} — $${def.reward}`;
+  // main.js owns the mission dialog (showDialog fills #mission-title /
+  // #mission-text; closeDialog(true) runs the onAccept → startMission).
+  if (typeof game.showDialog === 'function') {
+    game.showDialog(
+      `${def.name} — ${def.fixer}`,
+      `${def.hook} Reward $${def.reward} • ${def.timeLimit}s`,
+      () => startMission(game, def.id),
+    );
+  } else {
+    game.dialog = { open: true, kind: 'mission', mission: def.id, text: `${def.fixer}: ${def.hook}` };
+  }
+  if (game.showToast) game.showToast(`${def.fixer}: ${def.name} — $${def.reward}`);
   return true;
 }
 
 export function acceptDialog(game) {
   const m = ensureMissions(game);
   if (!m.dialogOpen) return false;
-  const def = MISSION_ARC.find((d) => d.id === m.dialogMission);
   m.dialogOpen = false;
   m.dialogMission = null;
-  if (game.dialog) game.dialog.open = false;
+  // main.js closeDialog(true) triggers the onAccept (startMission).
+  if (game.dialog && typeof game.closeDialog === 'function') {
+    game.closeDialog(true);
+    return true;
+  }
+  const def = MISSION_ARC[m.index];
   if (def) startMission(game, def.id);
   return true;
 }
@@ -109,6 +138,10 @@ export function declineDialog(game) {
   const m = ensureMissions(game);
   m.dialogOpen = false;
   m.dialogMission = null;
+  if (game.dialog && typeof game.closeDialog === 'function') {
+    game.closeDialog(false);
+    return true;
+  }
   if (game.dialog) game.dialog.open = false;
   return true;
 }
@@ -140,21 +173,21 @@ export function startMission(game, id) {
     );
   }
   if (id === 'm7') { if (game.addHeat) game.addHeat(20); setHeatAfterStart(game, 58); }
-  if (id === 'm8' && game.startShootout) game.startShootout(game, 'm8');
+  if (id === 'm8') callSys(game, 'combat', 'startShootout', 'm8');
   if (id === 'm9') {
     setHeatAfterStart(game, 58);
-    if (game.forceHelicopter) game.forceHelicopter(game, true);
+    callSys(game, 'helicopter', 'forceHelicopter', true);
   }
   if (id === 'm10') {
-    if (game.startShootout) game.startShootout(game, 'm10');
-    if (game.spawnArenaCrates) game.spawnArenaCrates(game, 'm10');
+    callSys(game, 'combat', 'startShootout', 'm10');
+    callSys(game, 'weapons', 'spawnArenaCrates', 'm10');
   }
   if (id === 'm11') { if (game.garage) game.garage.purchaseCount = 0; }
   if (id === 'm12') {
     setHeatAfterStart(game, 74); // 4 stars
-    if (game.startShootout) game.startShootout(game, 'm12');
-    if (game.spawnArenaCrates) game.spawnArenaCrates(game, 'm12');
-    if (game.forceHelicopter) game.forceHelicopter(game, true);
+    callSys(game, 'combat', 'startShootout', 'm12');
+    callSys(game, 'weapons', 'spawnArenaCrates', 'm12');
+    callSys(game, 'helicopter', 'forceHelicopter', true);
   }
   return true;
 }
@@ -162,8 +195,12 @@ export function startMission(game, id) {
 // Wanted cover: set AFTER the mission-start heat, so the final level is
 // exactly the intended one (m7: 58 = 3 stars; m9: 58; m12: 74 = 4 stars).
 function setHeatAfterStart(game, value) {
-  if (game.setHeat) game.setHeat(game, value);
-  else { game.heat = value; game.wantedStars = value >= 74 ? 4 : value >= 52 ? 3 : 0; }
+  if (game.setHeat) { game.setHeat(game, value); return; }
+  const mod = sys(game, 'police');
+  if (mod && mod.setHeat) { mod.setHeat(game, value); return; }
+  game.heat = value;
+  if (typeof game._updateStars === 'function') game._updateStars();
+  game.wantedStars = game.stars != null ? game.stars : (value >= 74 ? 4 : value >= 52 ? 3 : 0);
 }
 
 // --- m2 courier -------------------------------------------------------
@@ -344,14 +381,19 @@ export function completeMission(game) {
   m.stage = 0;
   game.objective = '';
   game.objectiveTarget = null;
-  if (game.forceHelicopter && (def.id === 'm9' || def.id === 'm12')) {
-    game.forceHelicopter(game, false);
+  // Keep main.js's own mission tracking in sync (Save stores these).
+  if (Array.isArray(game.completedMissions)) game.completedMissions.push(def.id);
+  game.missionIndex = m.index;
+  if (def.id === 'm9' || def.id === 'm12') {
+    callSys(game, 'helicopter', 'forceHelicopter', false);
   }
   if (game.audio && game.audio.cash) game.audio.cash();
-  if (game.hud) game.hud.message = `${def.name} complete! +$${reward}`;
+  if (game.showToast) game.showToast(`${def.name} complete! +$${reward}`);
   // Autosave after each mission writes to the active slot (save.js).
-  if (game.autosave) game.autosave(game);
-  else if (game.save && game.save.autosave) game.save.autosave(game);
+  try {
+    if (typeof game.autosave === 'function') game.autosave(game);
+    else saveAutosave(game);
+  } catch { /* a failed autosave never blocks the reward */ }
   return true;
 }
 
@@ -367,11 +409,20 @@ export function failMission(game, reason) {
   m.data = { hits: 0, checkpointsHit: 0, dropsCollected: 0, purchased: false };
   if (game.player) game.player.hp = game.player.maxHp || 100;
   if (def.id === 'm12' || def.id === 'm8' || def.id === 'm10') {
-    if (game.startShootout) game.startShootout(game, def.id);
+    callSys(game, 'combat', 'startShootout', def.id);
   }
   game.objective = missionObjectiveText(game);
   game.objectiveTarget = missionTarget(game);
   return true;
+}
+
+// main.js calls update(game, dt) on every loaded system.
+export function update(game, dt) {
+  updateMissions(game, dt);
+}
+
+export function init(game) {
+  ensureMissions(game);
 }
 
 export function updateMissions(game, dt) {
@@ -392,8 +443,10 @@ export function updateMissions(game, dt) {
 
   // Shootout stages complete when no enemies are alive.
   if ((m.id === 'm8' || m.id === 'm10' || m.id === 'm12') && m.stage === 0) {
-    const alive = game.enemiesAlive ? game.enemiesAlive(game)
-      : (game.combat ? game.combat.enemies.filter((e) => e.alive).length : 0);
+    const combatMod = sys(game, 'combat');
+    const alive = combatMod && combatMod.enemiesAlive ? combatMod.enemiesAlive(game)
+      : (game.enemiesAlive ? game.enemiesAlive(game)
+        : (game.enemies ? game.enemies.filter((e) => e.hp > 0).length : 0));
     if (alive === 0) {
       if (m.id === 'm12') { advanceStage(game); }
       else advanceStage(game);
@@ -426,6 +479,10 @@ export function updateMissions(game, dt) {
           if (!d.taken && near(game, d, 60)) {
             d.taken = true;
             m.data.dropsCollected = (m.data.dropsCollected || 0) + 1;
+            if (game.pickups) {
+              const i = game.pickups.findIndex((pk) => pk.mission === 'm6' && Math.hypot(pk.x - d.x, pk.y - d.y) < 5);
+              if (i >= 0) game.pickups.splice(i, 1);
+            }
             if (game.audio && game.audio.cash) game.audio.cash();
           }
         }

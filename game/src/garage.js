@@ -7,13 +7,55 @@
 // Engine (3 levels, +top speed each), Armor (3 levels, damage
 // resistance), Tires (2 levels, better handling/turning), Brakes
 // (2 levels, shorter stopping distance). Prices rise per level.
-// Upgrades apply to the player's CURRENT car and stay on that car
-// (stored per car, keyed by car id). Also paint: 6 colours for a small
-// fee (visual only — separate from the Spray Shop, which still only
-// clears heat). The menu shows current levels and cash. m11 requires
-// a purchase. Autopilot: drive in, open, buy cheapest, close, continue.
+// Upgrades live ON the car: car.upgrades {engine, armor, tires,
+// brakes} and car.paint — the same shape vehicles.js reads
+// (carTopSpeed adds +45 per engine level, damageCar cuts 15% per
+// armor level, carTurnRate adds +0.35 per tires level), so they
+// survive entering/exiting and apply to the player's CURRENT car.
+// Also paint: 6 colours for a small fee (visual only — separate from
+// the Spray Shop, which still only clears heat). The menu shows
+// current levels and cash. m11 requires a purchase. Autopilot: drive
+// in, open the menu (without pausing), buy the cheapest available
+// upgrade, close, continue — all in one frame, so it can never stall
+// behind a paused world.
 
-// game.time is a plain seconds number in the base main loop.
+import { CONFIG } from './config.js';
+
+export const GARAGE_DEFS = {
+  zone: { x: 1000, y: 1000, radius: 130 }, // CONFIG.garage
+  upgrades: {
+    engine: {
+      name: 'Engine', maxLevel: 3,
+      prices: [800, 1500, 2500],
+      desc: '+45 top speed each level',
+      topSpeedBonus: 45, // matches carTopSpeed in vehicles.js
+    },
+    armor: {
+      name: 'Armor', maxLevel: 3,
+      prices: [500, 900, 1400],
+      desc: 'damage resistance',
+      damageReduction: 0.15, // per level, matches damageCar
+    },
+    tires: {
+      name: 'Tires', maxLevel: 2,
+      prices: [400, 800],
+      desc: 'better handling / turning',
+      turnBonus: 0.35, // per level, matches carTurnRate
+    },
+    brakes: {
+      name: 'Brakes', maxLevel: 2,
+      prices: [350, 700],
+      desc: 'shorter stopping distance',
+      brakeBonus: 0.25, // per level, applied to car.brake
+    },
+  },
+  paint: {
+    name: 'Paint', price: 150,
+    colours: ['#d92638', '#f2b705', '#3e7cb1', '#2fae4e', '#7b4fd0', '#e8ecf2'],
+    colourNames: ['Crimson', 'Taxi Gold', 'Ocean Blue', 'Palm Green', 'Violet', 'Pearl'],
+  },
+};
+
 function now(game) {
   if (typeof game.time === 'number') return game.time;
   if (game.time && typeof game.time.now === 'number') return game.time.now;
@@ -30,46 +72,9 @@ function setCash(game, v) {
   if (game.player) game.player.cash = v;
 }
 
-export const GARAGE_DEFS = {
-  zone: { x: 1000, y: 1000, radius: 130 }, // CONFIG.garage
-  upgrades: {
-    engine: {
-      name: 'Engine', maxLevel: 3,
-      prices: [800, 1500, 2500],
-      desc: '+top speed each level',
-      // Applied as: car.topSpeed += 60 per level (on top of base type).
-      topSpeedBonus: 60,
-    },
-    armor: {
-      name: 'Armor', maxLevel: 3,
-      prices: [500, 900, 1400],
-      desc: 'damage resistance',
-      damageReduction: 0.15, // per level, multiplicative on car damage
-    },
-    tires: {
-      name: 'Tires', maxLevel: 2,
-      prices: [400, 800],
-      desc: 'better handling / turning',
-      turnBonus: 0.18, // per level, steering authority multiplier
-    },
-    brakes: {
-      name: 'Brakes', maxLevel: 2,
-      prices: [350, 700],
-      desc: 'shorter stopping distance',
-      brakeBonus: 0.25, // per level, braking force multiplier
-    },
-  },
-  paint: {
-    name: 'Paint', price: 150,
-    colours: ['#d92638', '#f2b705', '#3e7cb1', '#2fae4e', '#7b4fd0', '#e8ecf2'],
-    colourNames: ['Crimson', 'Taxi Gold', 'Ocean Blue', 'Palm Green', 'Violet', 'Pearl'],
-  },
-};
-
 export function createGarageState() {
   return {
     open: false,
-    cars: {}, // carId -> {engine, armor, tires, brakes, paint}
     lastPurchaseAt: -99,
     purchaseCount: 0, // purchases this mission (m11 reads this)
   };
@@ -80,11 +85,11 @@ export function ensureGarage(game) {
   return game.garage;
 }
 
+// Upgrades live on the car itself (vehicles.js shape).
 export function carUpgrades(game, car) {
-  const g = ensureGarage(game);
-  const id = (car && car.id != null) ? car.id : 'default';
-  if (!g.cars[id]) g.cars[id] = { engine: 0, armor: 0, tires: 0, brakes: 0, paint: null };
-  return g.cars[id];
+  if (!car) return { engine: 0, armor: 0, tires: 0, brakes: 0, paint: null };
+  if (!car.upgrades) car.upgrades = { engine: 0, armor: 0, tires: 0, brakes: 0 };
+  return car.upgrades;
 }
 
 export function upgradePrice(kind, level) {
@@ -108,11 +113,25 @@ export function cheapestUpgrade(game, car) {
 export function playerInGarageZone(game) {
   const p = game.player;
   if (!p) return false;
-  // The car counts too: driving in is what matters.
   const x = p.inCar && p.car ? p.car.x : p.x;
   const y = p.inCar && p.car ? p.car.y : p.y;
   const dx = x - GARAGE_DEFS.zone.x, dy = y - GARAGE_DEFS.zone.y;
   return dx * dx + dy * dy < GARAGE_DEFS.zone.radius * GARAGE_DEFS.zone.radius;
+}
+
+// Apply stored per-car upgrades to a car object (called on buy and when
+// the player enters a car that already has upgrades).
+export function applyUpgradesToCar(car, up) {
+  if (!car) return car;
+  const u = up || car.upgrades || { engine: 0, armor: 0, tires: 0, brakes: 0 };
+  car.upgrades = { engine: u.engine || 0, armor: u.armor || 0, tires: u.tires || 0, brakes: u.brakes || 0 };
+  if (u.paint) { car.paint = u.paint; car.color = u.paint; }
+  else if (car.paint) { car.color = car.paint; }
+  if (car.upgrades.brakes > 0) {
+    if (car.baseBrake == null) car.baseBrake = car.brake || 520;
+    car.brake = car.baseBrake * (1 + GARAGE_DEFS.upgrades.brakes.brakeBonus * car.upgrades.brakes);
+  }
+  return car;
 }
 
 // Buy an upgrade for the player's current car. Returns the purchase or null.
@@ -130,7 +149,7 @@ export function buyUpgrade(game, kind) {
   g.purchaseCount += 1;
   applyUpgradesToCar(p.car, up);
   if (game.audio && game.audio.cash) game.audio.cash();
-  if (game.hud) game.hud.message = `${GARAGE_DEFS.upgrades[kind].name} level ${up[kind]} installed!`;
+  if (game.showToast) game.showToast(`${GARAGE_DEFS.upgrades[kind].name} level ${up[kind]} installed!`);
   return { kind, level: up[kind], price };
 }
 
@@ -144,6 +163,7 @@ export function buyPaint(game, colourIndex) {
   setCash(game, getCash(game) - paint.price);
   const up = carUpgrades(game, p.car);
   up.paint = paint.colours[colourIndex];
+  p.car.paint = paint.colours[colourIndex];
   p.car.color = paint.colours[colourIndex];
   g.lastPurchaseAt = now(game);
   g.purchaseCount += 1;
@@ -151,50 +171,52 @@ export function buyPaint(game, colourIndex) {
   return { kind: 'paint', colour: paint.colours[colourIndex], price: paint.price };
 }
 
-// Apply stored per-car upgrades to a car object (called on buy and when
-// the player enters a car that already has upgrades).
-export function applyUpgradesToCar(car, up) {
-  if (!car || !up) return car;
-  const base = car.baseTopSpeed || car.topSpeed || 380;
-  car.baseTopSpeed = base;
-  car.topSpeed = base + up.engine * GARAGE_DEFS.upgrades.engine.topSpeedBonus;
-  car.armorLevel = up.armor;
-  car.damageReduction = 1 - Math.pow(1 - GARAGE_DEFS.upgrades.armor.damageReduction, up.armor);
-  car.turnBonus = 1 + up.tires * GARAGE_DEFS.upgrades.tires.turnBonus;
-  car.brakeBonus = 1 + up.brakes * GARAGE_DEFS.upgrades.brakes.brakeBonus;
-  if (up.paint) car.color = up.paint;
-  return car;
-}
-
-export function openGarageMenu(game) {
+// Open the menu. opts.pause (default true) pauses the world by setting
+// game.state to 'paused'; the autopilot passes {pause:false} and buys +
+// closes in the same frame instead, so it can never stall behind a
+// paused world.
+export function openGarageMenu(game, opts) {
   const g = ensureGarage(game);
   if (g.open) return false;
   if (!playerInGarageZone(game)) return false;
   g.open = true;
-  game.paused = true; // DOM overlay pauses the world
+  const pause = !opts || opts.pause !== false;
+  if (pause && game.state === 'playing') {
+    game.state = 'paused';
+    game._garagePaused = true;
+  }
   renderGarageMenu(game);
   return true;
+}
+
+export function tryOpen(game) {
+  return openGarageMenu(game);
 }
 
 export function closeGarageMenu(game) {
   const g = ensureGarage(game);
   if (!g.open) return false;
   g.open = false;
-  game.paused = false;
-  const el = document.getElementById('garage-menu');
-  if (el) el.remove();
+  if (game._garagePaused) {
+    game.state = 'playing';
+    game._garagePaused = false;
+  }
+  if (typeof document !== 'undefined') {
+    const el = document.getElementById('garage-menu');
+    if (el) el.remove();
+  }
   return true;
 }
 
 // DOM overlay (id="garage-menu"). Buttons call buyUpgrade/buyPaint and
-// re-render so levels + cash stay visible. Never touches main.js/index.html.
+// re-render so levels + cash stay visible.
 export function renderGarageMenu(game) {
   if (typeof document === 'undefined') return;
   let el = document.getElementById('garage-menu');
   if (el) el.remove();
   el = document.createElement('div');
   el.id = 'garage-menu';
-  el.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(8,10,20,0.72);z-index:40;font-family:sans-serif;';
+  el.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(8,10,20,0.72);z-index:40;font-family:sans-serif;color:#fff;';
   const p = game.player || {};
   const up = carUpgrades(game, p.car);
   const cash = getCash(game);
@@ -202,9 +224,7 @@ export function renderGarageMenu(game) {
     const def = GARAGE_DEFS.upgrades[kind];
     const level = up[kind];
     const price = upgradePrice(kind, level);
-    const label = price == null
-      ? 'MAX'
-      : `$${price} — Buy`;
+    const label = price == null ? 'MAX' : `$${price} — Buy`;
     const disabled = price == null || cash < price ? 'disabled' : '';
     return `<div style="display:flex;justify-content:space-between;gap:16px;margin:8px 0;">
       <span><b>${def.name}</b> — Lv ${level}/${def.maxLevel} <i style="color:#aaa">${def.desc}</i></span>
@@ -222,7 +242,8 @@ export function renderGarageMenu(game) {
     <div>${paints}</div>
     <button id="garage-close" style="margin-top:16px;padding:8px 20px;cursor:pointer;">Close (E)</button>
   </div>`;
-  document.body.appendChild(el);
+  const host = document.getElementById('wrap') || document.body;
+  host.appendChild(el);
   el.querySelectorAll('[data-upgrade]').forEach((b) => {
     b.addEventListener('click', () => { buyUpgrade(game, b.dataset.upgrade); renderGarageMenu(game); });
   });
@@ -233,8 +254,11 @@ export function renderGarageMenu(game) {
   if (close) close.addEventListener('click', () => closeGarageMenu(game));
 }
 
-export function updateGarage(game, input) {
+// main.js calls update(game, dt); keys come from game.input.
+export function updateGarage(game, dt) {
+  void dt;
   ensureGarage(game);
+  const input = game.input;
   if (game.garage.open) {
     if (input && typeof input.pressed === 'function' && (input.pressed('e') || input.pressed('Escape'))) {
       closeGarageMenu(game);
@@ -242,8 +266,16 @@ export function updateGarage(game, input) {
     return;
   }
   if (input && typeof input.pressed === 'function' && input.pressed('e')) {
-    if (playerInGarageZone(game) && game.player && game.player.car) openGarageMenu(game);
+    if (playerInGarageZone(game)) openGarageMenu(game);
   }
+}
+
+export function update(game, dt) {
+  updateGarage(game, dt);
+}
+
+export function init(game) {
+  ensureGarage(game);
 }
 
 export function drawGarageZone(ctx, camera, game) {

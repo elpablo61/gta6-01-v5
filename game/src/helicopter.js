@@ -53,6 +53,9 @@ export function ensureHelicopter(game) {
 }
 
 export function wantedStars(game) {
+  // main.js keeps game.stars in sync via _updateStars; that is the
+  // authority. Fall back to game.wantedStars, then to heat thresholds.
+  if (typeof game.stars === 'number') return game.stars;
   if (game.wantedStars != null) return game.wantedStars;
   const heat = game.heat || 0;
   const t = [0, 12, 30, 52, 74, 92];
@@ -166,6 +169,15 @@ export function updateHelicopter(game, dt) {
     h.x = Math.max(40, Math.min(3160, h.x));
     h.y = Math.max(40, Math.min(3160, h.y));
   }
+}
+
+// main.js calls update(game, dt) on every loaded system.
+export function update(game, dt) {
+  updateHelicopter(game, dt);
+}
+
+export function init(game) {
+  ensureHelicopter(game);
 }
 
 export function drawHelicopter(ctx, camera, game) {
