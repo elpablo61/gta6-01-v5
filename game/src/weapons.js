@@ -17,17 +17,17 @@
 export const WEAPON_DEFS = {
   pistol: {
     id: 'pistol', name: 'Pistol', key: '1', damage: 18, fireInterval: 0.28,
-    pellets: 1, spread: 0.02, range: 520, bulletSpeed: 900,
+    pellets: 1, spread: 0.02, range: 420, bulletSpeed: 900,
     startAmmo: 48, crateAmmo: 48, maxAmmo: 240, color: '#ffe9a8',
   },
   smg: {
     id: 'smg', name: 'SMG', key: '2', damage: 10, fireInterval: 0.09,
-    pellets: 1, spread: 0.06, range: 460, bulletSpeed: 1000,
+    pellets: 1, spread: 0.06, range: 360, bulletSpeed: 1000,
     startAmmo: 0, crateAmmo: 120, maxAmmo: 480, color: '#9fd8ff',
   },
   shotgun: {
-    id: 'shotgun', name: 'Shotgun', key: '3', damage: 8, fireInterval: 0.85,
-    pellets: 5, spread: 0.16, range: 260, bulletSpeed: 780,
+    id: 'shotgun', name: 'Shotgun', key: '3', damage: 8, fireInterval: 0.7,
+    pellets: 5, spread: 0.16, range: 240, bulletSpeed: 780,
     startAmmo: 0, crateAmmo: 24, maxAmmo: 120, color: '#ffb37a',
   },
 };
@@ -35,22 +35,23 @@ export const WEAPON_DEFS = {
 export const WEAPON_ORDER = ['pistol', 'smg', 'shotgun'];
 
 // Fixed world crate spots (spec §3.2): gun store, docks, hideout.
+// Coordinates match CONFIG landmarks: hideout (600,800), docks (2600,2800).
 export const WORLD_CRATE_SPOTS = [
-  { x: 1000, y: 1000, weapon: 'smg' },     // gun store, Old Town
-  { x: 2600, y: 2600, weapon: 'shotgun' }, // docks, South Docks
-  { x: 600, y: 2200, weapon: 'smg' },      // hideout area
-  { x: 2200, y: 600, weapon: 'shotgun' },  // Downtown gun store #2
+  { x: 1000, y: 1400, weapon: 'smg' },     // gun store, Old Town
+  { x: 2600, y: 2800, weapon: 'shotgun' }, // docks, South Docks
+  { x: 600, y: 800, weapon: 'smg' },       // hideout
+  { x: 1800, y: 600, weapon: 'shotgun' },  // club area
 ];
 
 // Arena crate spots used by m10 (dockside) and m12 (bank).
 export const ARENA_CRATE_SPOTS = {
   m10: [
-    { x: 2500, y: 2500, weapon: 'smg' },
-    { x: 2650, y: 2650, weapon: 'shotgun' },
+    { x: 2500, y: 2600, weapon: 'smg' },
+    { x: 2660, y: 2600, weapon: 'shotgun' },
   ],
   m12: [
-    { x: 1750, y: 1750, weapon: 'smg' },
-    { x: 1850, y: 1850, weapon: 'shotgun' },
+    { x: 2100, y: 1800, weapon: 'smg' },
+    { x: 2300, y: 1800, weapon: 'shotgun' },
   ],
 };
 
@@ -135,7 +136,7 @@ export function tryFire(game, aimAngle) {
   if (now - game.weapons.lastShotAt < def.fireInterval) return false;
   if (currentAmmo(game) <= 0) {
     game.weapons.lastShotAt = now; // dry-fire click still gates the rate
-    if (game.audio && game.audio.playClick) game.audio.playClick();
+    if (game.audio && game.audio.click) game.audio.click();
     return false;
   }
   game.weapons.ammo[def.id] -= 1;
@@ -153,7 +154,7 @@ export function tryFire(game, aimAngle) {
       from: 'player', life: def.range / def.bulletSpeed, color: def.color,
     });
   }
-  if (game.audio && game.audio.playGunshot) game.audio.playGunshot(def.id);
+  if (game.audio && game.audio.gunshot) game.audio.gunshot();
   if (game.effects) game.effects.muzzle = { x: mx, y: my, t: 0.08, angle };
   if (game.addHeat) game.addHeat(2); // a gunshot is a crime, small heat
   return true;
@@ -183,7 +184,7 @@ export function updateWeaponPickups(game) {
       c.taken = true;
       giveWeapon(game, c.weapon);
       if (game.hud) game.hud.message = `Picked up ${WEAPON_DEFS[c.weapon].name}!`;
-      if (game.audio && game.audio.playPickup) game.audio.playPickup();
+      if (game.audio && game.audio.pickup) game.audio.pickup();
     }
   }
   for (const a of game.ammoPickups) {
@@ -192,7 +193,7 @@ export function updateWeaponPickups(game) {
     if (dx * dx + dy * dy < 30 * 30) {
       a.taken = true;
       addAmmo(game, game.weapons.current, a.amount);
-      if (game.audio && game.audio.playPickup) game.audio.playPickup();
+      if (game.audio && game.audio.pickup) game.audio.pickup();
     }
   }
   game.crates = game.crates.filter((c) => !c.taken || c.arena);
@@ -216,11 +217,13 @@ export function updateBullets(game, dt) {
 
 export function updateWeapons(game, dt, input) {
   ensureWeapons(game);
-  if (input) {
-    if (input.pressed && input.pressed['1']) switchWeapon(game, 'pistol');
-    if (input.pressed && input.pressed['2']) switchWeapon(game, 'smg');
-    if (input.pressed && input.pressed['3']) switchWeapon(game, 'shotgun');
-    if (input.pressed && (input.pressed['q'] || input.pressed['Q'])) cycleWeapon(game);
+  // `input` is the base Input class: pressed(key) / down(key), keys are
+  // lowercase single chars, justPressed is cleared at end of frame.
+  if (input && typeof input.pressed === 'function') {
+    if (input.pressed('1')) switchWeapon(game, 'pistol');
+    if (input.pressed('2')) switchWeapon(game, 'smg');
+    if (input.pressed('3')) switchWeapon(game, 'shotgun');
+    if (input.pressed('q')) cycleWeapon(game);
   }
   updateWeaponPickups(game);
   updateBullets(game, dt);
