@@ -80,6 +80,7 @@ export function setStation(game, index) {
 export function startRadio(game) {
   ensureRadio(game);
   game.radio.station = 0;
+  game.radioStation = RADIO_STATIONS[0].name; // render.js reads this
   if (game.audio && typeof game.audio.setStation === 'function') game.audio.setStation(0);
   if (game.audio && typeof game.audio.startMusic === 'function') game.audio.startMusic();
 }
