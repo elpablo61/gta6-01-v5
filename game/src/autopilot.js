@@ -99,9 +99,19 @@ export function routeTo(game, tx, ty) {
   const fromY = p.inCar && p.car ? p.car.y : p.y;
   if (!auto.route || !auto.routeDest
     || Math.hypot(tx - auto.routeDest.x, ty - auto.routeDest.y) > 100) {
+    // Preserve the waypoint the car is already heading for when it
+    // exists in the new route — without this, a moving target (the m2
+    // courier) makes the route flip its first leg every rebuild and
+    // the car stops/rotates in place forever at one junction.
+    const keep = auto.route && auto.routeIndex < auto.route.length
+      ? auto.route[auto.routeIndex] : null;
     auto.route = world.findRoute(fromX, fromY, tx, ty);
     auto.routeDest = { x: tx, y: ty };
     auto.routeIndex = 0;
+    if (keep) {
+      const idx = auto.route.findIndex((w) => w.x === keep.x && w.y === keep.y);
+      if (idx >= 0) auto.routeIndex = idx;
+    }
   }
   return auto.route;
 }
@@ -111,6 +121,17 @@ export function routeTo(game, tx, ty) {
 // straight to the exact target (static landmarks only — never for the
 // moving courier). Returns distance to the final target.
 export function driveCarToward(game, car, tx, ty, cruise, dt) {
+  // Chase close-range: when the courier is within 220, drive straight
+  // at it instead of following route waypoints (it is already on a
+  // nearby road — the ram window is what matters now).
+  if (game.mission && game.mission.id === 'm2' && game.courier) {
+    const dc = Math.hypot(game.courier.x - car.x, game.courier.y - car.y);
+    if (dc < 220) {
+      driveToward(car, game.courier.x, game.courier.y, cruise, dt, game);
+      if (game.player) { game.player.x = car.x; game.player.y = car.y; }
+      return dc;
+    }
+  }
   const route = routeTo(game, tx, ty);
   const auto = ensureAutopilot(game);
   let target = { x: tx, y: ty };

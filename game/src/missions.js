@@ -13,6 +13,7 @@
 
 import { CONFIG } from './config.js';
 import { autosave as saveAutosave } from './save.js';
+import { driveToward } from './vehicles.js';
 
 // A sibling system, loaded as game.systems[name] by main.js, or a
 // same-named helper the harness stubs directly on `game`.
@@ -211,6 +212,13 @@ function setupCourier(game) {
     x: start.x, y: start.y, angle: 0, speed: 0,
     cruise: 380, hits: 0, route: null, routeDest: null, routeIndex: 0,
     target: { x: 2600, y: 2200 },
+    // Car-shaped fields so the courier can drive with vehicles.js
+    // driveToward (road-constrained steering, wall sliding) instead of
+    // raw angle math that drifts off-road across blocks and the beach.
+    type: 'sedan', length: 46, width: 22, accel: 260, brake: 520,
+    hp: 100, topSpeed: 380,
+    upgrades: { engine: 0, armor: 0, tires: 0, brakes: 0 },
+    wallDamageAt: 0, reverseTime: 0, stuckTime: 0,
   };
   game.courier = m.data.courier;
 }
@@ -246,14 +254,10 @@ export function updateCourier(game, dt) {
     }
     return;
   }
-  const want = Math.atan2(dy, dx);
-  let diff = want - c.angle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  c.angle += Math.max(-2.2 * dt, Math.min(2.2 * dt, diff));
-  c.speed = Math.min(c.cruise, c.speed + 200 * dt);
-  c.x += Math.cos(c.angle) * c.speed * dt;
-  c.y += Math.sin(c.angle) * c.speed * dt;
+  // Drive the route with the same road-constrained steering as every
+  // other car (stop-and-rotate on sharp turns, wall sliding) — never
+  // raw angle chasing, which drifts off-road and onto the beach.
+  driveToward(c, wp.x, wp.y, c.cruise, dt, game);
   world.clampToWorld(c, 20);
 }
 
