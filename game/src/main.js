@@ -158,7 +158,23 @@ export const game = {
     this.bullets = [];
     document.getElementById('game-over-screen').classList.add('hidden');
     this.state = 'playing';
-    this.setObjective('Free roam — visit the Fixer Garage to take a job', { x: CONFIG.garage.x, y: CONFIG.garage.y });
+    // A respawn must not strand an active mission: the free-roam
+    // objective would send the autopilot — and the HUD marker — to the
+    // garage while the mission waits at its own marker (m10 stage 1
+    // sat there forever). Re-assert the mission's objective/target
+    // instead. And a death mid-shootout must not skip the fight: the
+    // respawn wipes the enemy list above, so re-spawn the arena.
+    const m = this.mission;
+    const missionSys = this.systems.missions;
+    if (m && m.active && missionSys && missionSys.missionObjectiveText && missionSys.missionTarget) {
+      this.setObjective(missionSys.missionObjectiveText(this), missionSys.missionTarget(this));
+      if ((m.id === 'm8' || m.id === 'm10' || m.id === 'm12') && m.stage === 0) {
+        const combat = this.systems.combat;
+        if (combat && combat.startShootout) combat.startShootout(this, m.id);
+      }
+    } else {
+      this.setObjective('Free roam — visit the Fixer Garage to take a job', { x: CONFIG.garage.x, y: CONFIG.garage.y });
+    }
     this.showToast(`Back on your feet. Lost $${lost}.`);
   },
 };
