@@ -11,6 +11,13 @@
 // and free roam. Music only, no talk. The old single music loop is
 // replaced by this station system.
 
+// game.time is a plain seconds number in the base main loop.
+function now(game) {
+  if (typeof game.time === 'number') return game.time;
+  if (game.time && typeof game.time.now === 'number') return game.time.now;
+  return 0;
+}
+
 export const RADIO_STATIONS = [
   { name: 'Bay FM', style: 'synthwave, driving bass', tempo: 'fast', wave: 'triangle' },
   { name: 'Harbor Jazz', style: 'slow swing', tempo: 'slow', wave: 'sine' },
@@ -49,7 +56,8 @@ export function currentStation(game) {
 export function cycleStation(game) {
   const r = ensureRadio(game);
   r.station = (r.station + 1) % RADIO_STATIONS.length;
-  r.lastSwitchAt = game.time ? game.time.now : 0;
+  r.lastSwitchAt = now(game);
+  game.radioStation = RADIO_STATIONS[r.station].name; // render.js reads this
   if (game.audio && typeof game.audio.setStation === 'function') {
     game.audio.setStation(r.station);
   }
@@ -60,7 +68,8 @@ export function cycleStation(game) {
 export function setStation(game, index) {
   const r = ensureRadio(game);
   r.station = ((index % RADIO_STATIONS.length) + RADIO_STATIONS.length) % RADIO_STATIONS.length;
-  r.lastSwitchAt = game.time ? game.time.now : 0;
+  r.lastSwitchAt = now(game);
+  game.radioStation = RADIO_STATIONS[r.station].name;
   if (game.audio && typeof game.audio.setStation === 'function') {
     game.audio.setStation(r.station);
   }
@@ -78,11 +87,11 @@ export function startRadio(game) {
 // Equalizer levels for the HUD: 5 bars, animated from the station's
 // tempo (fast stations bounce quicker). Deterministic-ish, driven by
 // game time so the HUD draw stays pure.
-export function equalizerLevels(game, now) {
+export function equalizerLevels(game, at) {
   const r = ensureRadio(game);
   const st = RADIO_STATIONS[r.station];
   const speed = st.tempo === 'slow' ? 3.2 : 7.5;
-  const t = (now != null ? now : (game.time ? game.time.now : 0)) * speed;
+  const t = (at != null ? at : now(game)) * speed;
   const levels = [];
   for (let i = 0; i < 5; i++) {
     levels.push(0.35 + 0.65 * Math.abs(Math.sin(t + i * 1.3)));

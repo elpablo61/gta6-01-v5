@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crescent Bay — Open World Crime Game</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23d92638'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'%3EC%3C/text%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; padding: 0; background: #0c0f16; overflow: hidden; font-family: system-ui, sans-serif; }
+  #wrap { position: relative; width: 1280px; height: 800px; margin: 0 auto; }
+  canvas { display: block; background: #b8a67e; }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; text-align: center; background: rgba(8, 10, 20, 0.55); }
+  .hidden { display: none !important; }
+  h1 { font-size: 72px; margin: 0 0 8px; letter-spacing: 4px; color: #ffd23f; text-shadow: 0 4px 0 #7a1f2b, 0 8px 24px rgba(0,0,0,0.7); }
+  h2 { font-size: 40px; margin: 0 0 12px; color: #ffd23f; text-shadow: 0 3px 12px rgba(0,0,0,0.8); }
+  .sub { font-size: 20px; margin-bottom: 24px; color: #e8e8e8; text-shadow: 0 2px 8px rgba(0,0,0,0.8); }
+  .features { font-size: 17px; margin: 0 0 22px; color: #cfe3ff; background: rgba(0,0,0,0.45); padding: 10px 18px; border-radius: 8px; }
+  button { font-size: 20px; padding: 12px 28px; margin: 6px; border: none; border-radius: 8px; background: #d92638; color: #fff; cursor: pointer; font-weight: bold; }
+  button:hover { background: #f03a4d; }
+  button.secondary { background: #2b3a55; }
+  button.secondary:hover { background: #3a4f75; }
+  #controls-list { font-size: 15px; line-height: 1.7; color: #ddd; background: rgba(0,0,0,0.45); padding: 12px 20px; border-radius: 8px; margin-top: 10px; }
+  #save-slots { margin: 8px 0; }
+  .slot { display: inline-block; min-width: 200px; margin: 4px; padding: 10px 14px; background: rgba(0,0,0,0.55); border: 2px solid #445; border-radius: 8px; color: #fff; cursor: pointer; font-size: 15px; }
+  .slot:hover { border-color: #ffd23f; }
+  .slot.corrupt { border-color: #ff3b30; }
+  #mission-dialog { position: absolute; left: 50%; top: 58%; transform: translate(-50%, -50%); width: 560px; background: rgba(10, 14, 24, 0.92); border: 2px solid #ffd23f; border-radius: 12px; padding: 20px 24px; color: #fff; text-align: left; z-index: 5; }
+  #mission-dialog h3 { margin: 0 0 6px; color: #ffd23f; font-size: 24px; }
+  #mission-dialog p { margin: 0 0 14px; font-size: 17px; line-height: 1.5; }
+  #hud-hint { position: absolute; left: 12px; bottom: 10px; color: rgba(255,255,255,0.75); font-size: 13px; text-shadow: 0 1px 4px #000; z-index: 3; pointer-events: none; }
+  #toast { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); background: rgba(0,0,0,0.65); color: #ffd23f; font-size: 22px; font-weight: bold; padding: 10px 22px; border-radius: 8px; z-index: 4; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="800"></canvas>
+  <div id="hud-hint">WASD move &middot; Mouse aim &middot; Click shoot &middot; E enter car &middot; Shift sprint &middot; Space handbrake &middot; R radio &middot; Q weapon &middot; Esc pause</div>
+  <div id="toast" class="hidden"></div>
+
+  <div id="title-screen" class="overlay">
+    <h1>CRESCENT BAY</h1>
+    <div class="sub">Play as Rook. Steal any car. Outrun the police. Take the jobs.</div>
+    <div class="features">12 missions &middot; Wanted 1&ndash;5 stars &middot; Traffic &amp; pedestrians &middot; Steal any car &middot; Day &amp; night &middot; Save game &middot; Radio &middot; Garage upgrades</div>
+    <div id="save-slots"></div>
+    <div>
+      <button id="btn-new-game">New Game</button>
+      <button id="btn-continue" class="secondary">Continue</button>
+    </div>
+    <div id="controls-list">
+      WASD / Arrows — move &amp; drive &middot; Mouse — aim &middot; Click — shoot &middot; E — enter / exit car &middot; Shift — sprint<br>
+      Space — handbrake &middot; R — radio station &middot; Q / 1-2-3 — weapons &middot; Esc / P — pause
+    </div>
+  </div>
+
+  <div id="pause-menu" class="overlay hidden">
+    <h2>PAUSED</h2>
+    <div class="sub">Crescent Bay is waiting for you, Rook.</div>
+    <button id="btn-resume">Resume</button>
+    <button id="btn-save" class="secondary">Save Game</button>
+    <button id="btn-quit-title" class="secondary">Quit to Title</button>
+  </div>
+
+  <div id="game-over-screen" class="overlay hidden">
+    <h2 id="game-over-title">DOWN</h2>
+    <div class="sub" id="game-over-text">Rook is down. The crew pulls you out — you lose some cash, but the city is still yours.</div>
+    <button id="btn-respawn">Get Back Up</button>
+    <button id="btn-title-after-over" class="secondary">Title Screen</button>
+  </div>
+
+  <div id="mission-dialog" class="hidden">
+    <h3 id="mission-title">New Job</h3>
+    <p id="mission-text"></p>
+    <button id="btn-accept-mission">Accept (E)</button>
+    <button id="btn-decline-mission" class="secondary">Later</button>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

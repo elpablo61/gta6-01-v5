@@ -7,6 +7,13 @@
 // arena, never pile onto one spot (spec §9.2). Cover + health pickups
 // sit in every arena so the finale is survivable.
 
+// game.time is a plain seconds number in the base main loop.
+function now(game) {
+  if (typeof game.time === 'number') return game.time;
+  if (game.time && typeof game.time.now === 'number') return game.time.now;
+  return 0;
+}
+
 export const ENEMY_DEFS = {
   grunt: { hp: 36, damage: 6, fireInterval: 1.1, range: 380, speed: 95, color: '#c94f3d' },
 };
@@ -67,6 +74,8 @@ export function startShootout(game, missionId) {
     lastShotAt: -99, angle: 0,
   }));
   c.healthPickups = arena.health.map((h) => ({ ...h, taken: false }));
+  for (const e of c.enemies) e.maxHp = ENEMY_DEFS.grunt.hp;
+  game.enemies = c.enemies;
   // Cop perimeter: a ring around the arena, never piled on one spot.
   c.perimeter = [];
   const n = 6;
@@ -150,7 +159,7 @@ export function resolvePlayerBullets(game) {
 export function updateCombat(game, dt) {
   const c = ensureCombat(game);
   const p = game.player;
-  const now = game.time ? game.time.now : 0;
+  const t = now(game);
   if (!p) return;
 
   // Enemies: pistol only, slow aimed fire, never all at once.
@@ -167,11 +176,11 @@ export function updateCombat(game, dt) {
       e.x -= (dx / d) * ENEMY_DEFS.grunt.speed * 0.5 * dt;
       e.y -= (dy / d) * ENEMY_DEFS.grunt.speed * 0.5 * dt;
     }
-    if (d < ENEMY_DEFS.grunt.range && p.onFoot && now - e.lastShotAt > ENEMY_DEFS.grunt.fireInterval) {
-      e.lastShotAt = now;
+    if (d < ENEMY_DEFS.grunt.range && !p.inCar && t - e.lastShotAt > ENEMY_DEFS.grunt.fireInterval) {
+      e.lastShotAt = t;
       const a = e.angle + (Math.random() - 0.5) * 0.14;
       c.enemyBullets.push({
-        x: e.x + Math.cos(a) * 20, y: e.y + Math.sin(a) * 20,
+        x: e.x + Math.cos(a) * 20, y: e.y + Math.sin(a) * 20, angle: a,
         vx: Math.cos(a) * 620, vy: Math.sin(a) * 620,
         damage: ENEMY_DEFS.grunt.damage, life: 1.2,
       });
@@ -184,16 +193,17 @@ export function updateCombat(game, dt) {
     const b = c.enemyBullets[i];
     b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
     let dead = b.life <= 0;
-    if (!dead && p.onFoot) {
+    if (!dead && !p.inCar) {
       const dx = b.x - p.x, dy = b.y - p.y;
       if (dx * dx + dy * dy < 18 * 18) { damagePlayer(game, b.damage); dead = true; }
     }
     if (dead) c.enemyBullets.splice(i, 1);
   }
   game.enemyBullets = c.enemyBullets;
+  game.enemies = c.enemies;
 
   // Health pickups in the arena.
-  if (p.onFoot) {
+  if (!p.inCar) {
     for (const h of c.healthPickups) {
       if (h.taken) continue;
       const dx = p.x - h.x, dy = p.y - h.y;

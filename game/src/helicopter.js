@@ -12,6 +12,13 @@
 // on the ground and a rotor blur. The autopilot ignores it except by
 // keeping moving toward its objective (never stop under the spotlight).
 
+// game.time is a plain seconds number in the base main loop.
+function now(game) {
+  if (typeof game.time === 'number') return game.time;
+  if (game.time && typeof game.time.now === 'number') return game.time.now;
+  return 0;
+}
+
 export const HELICOPTER_DEFS = {
   speed: 620,            // faster than any car (top car speed ~560)
   height: 150,           // fixed visual height above the ground
@@ -30,6 +37,7 @@ export const HELICOPTER_STATE = {
 export function createHelicopterState() {
   return {
     state: HELICOPTER_STATE.GONE,
+    active: false,
     x: 0, y: 0,
     hp: HELICOPTER_DEFS.hp,
     retreatTimer: 0,
@@ -77,9 +85,11 @@ export function forceHelicopter(game, on) {
     h.x = p.x - 300; h.y = p.y - 300;
     h.hp = HELICOPTER_DEFS.hp;
     h.state = HELICOPTER_STATE.SHADOWING;
+    h.active = true;
   }
   if (!on && h.state !== HELICOPTER_STATE.GONE && wantedStars(game) < 3) {
     h.state = HELICOPTER_STATE.GONE;
+    h.active = false;
   }
 }
 
@@ -91,6 +101,7 @@ export function damageHelicopter(game, amount) {
   h.hp -= amount;
   if (h.hp <= 0) {
     h.state = HELICOPTER_STATE.RETREATING;
+    h.active = true;
     h.retreatTimer = HELICOPTER_DEFS.retreatSeconds;
     h.smokeTimer = HELICOPTER_DEFS.retreatSeconds;
     if (game.hud) game.hud.message = 'Helicopter smoking — it is pulling back!';
@@ -110,6 +121,7 @@ export function updateHelicopter(game, dt) {
       h.x = p.x - 320; h.y = p.y - 320;
       h.hp = HELICOPTER_DEFS.hp;
       h.state = HELICOPTER_STATE.SHADOWING;
+      h.active = true;
     }
     return;
   }
@@ -128,8 +140,10 @@ export function updateHelicopter(game, dt) {
       if ((wantedStars(game) >= 3 || h.forced) && p) {
         h.hp = HELICOPTER_DEFS.hp;
         h.state = HELICOPTER_STATE.SHADOWING;
+        h.active = true;
       } else {
         h.state = HELICOPTER_STATE.GONE;
+        h.active = false;
       }
     }
     return;
@@ -138,6 +152,7 @@ export function updateHelicopter(game, dt) {
   // SHADOWING: fly straight at Rook, faster than any car, no roads.
   if (!h.forced && stars < 3) {
     h.state = HELICOPTER_STATE.GONE;
+    h.active = false;
     return;
   }
   if (p) {
@@ -159,7 +174,7 @@ export function drawHelicopter(ctx, camera, game) {
   const camX = camera ? camera.x : 0, camY = camera ? camera.y : 0;
   const sx = h.x - camX, sy = h.y - camY;
   if (sx < -160 || sy < -160 || sx > 1440 || sy > 960) return;
-  const t = game.time ? game.time.now : 0;
+  const t = now(game);
 
   // Spotlight cone/circle on the ground, following Rook.
   if (h.state === HELICOPTER_STATE.SHADOWING && game.player) {

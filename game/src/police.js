@@ -10,6 +10,13 @@
 // 150, heat drain 50/s; patrol cars brake and reverse within 130 of it;
 // collision damage 3/s per car.
 
+// game.time is a plain seconds number in the base main loop.
+function now(game) {
+  if (typeof game.time === 'number') return game.time;
+  if (game.time && typeof game.time.now === 'number') return game.time.now;
+  return 0;
+}
+
 export const WANTED_STAR_THRESHOLDS = [0, 12, 30, 52, 74, 92];
 
 export const POLICE_DEFS = {
@@ -49,10 +56,12 @@ export function createPoliceState() {
 }
 
 export function ensurePolice(game) {
-  if (!game.police) game.police = createPoliceState();
-  if (game.heat == null) game.heat = game.police.heat;
-  if (game.wantedStars == null) game.wantedStars = game.police.stars;
-  return game.police;
+  if (!game.policeState) game.policeState = createPoliceState();
+  if (game.heat == null) game.heat = game.policeState.heat;
+  if (game.wantedStars == null) game.wantedStars = game.policeState.stars;
+  // render.js reads game.police as the foot-cop array; keep it mirrored.
+  game.police = game.policeState.footCops;
+  return game.policeState;
 }
 
 export function addHeat(game, amount) {
@@ -141,7 +150,7 @@ export function policeBudget(stars) {
 export function updateArrest(game, dt) {
   const pol = ensurePolice(game);
   const p = game.player;
-  if (!p || !p.onFoot) return false;
+  if (!p || p.inCar) return false;
   const speed = Math.hypot(p.vx || 0, p.vy || 0);
   const running = speed > 140;
   for (const c of pol.footCops) {
@@ -178,7 +187,7 @@ export function updatePolice(game, dt) {
       const dx = p.x - c.x, dy = p.y - c.y;
       const d = Math.hypot(dx, dy);
       if (d > 60 && d < 900) {
-        const sp = p.onFoot ? 150 : 110;
+        const sp = !p.inCar ? 150 : 110;
         c.x += (dx / d) * sp * dt;
         c.y += (dy / d) * sp * dt;
       }
@@ -208,7 +217,7 @@ export function drawPolice(ctx, camera, game) {
   if (sx > -200 && sy > -200 && sx < 1480 && sy < 1000) {
     ctx.save();
     ctx.translate(sx, sy);
-    ctx.strokeStyle = game.police.inSprayShop ? '#7dff9a' : '#ffd94d';
+    ctx.strokeStyle = (game.policeState && game.policeState.inSprayShop) ? '#7dff9a' : '#ffd94d';
     ctx.lineWidth = 3;
     ctx.setLineDash([10, 8]);
     ctx.beginPath(); ctx.arc(0, 0, SPRAY_SHOP.radius, 0, Math.PI * 2); ctx.stroke();

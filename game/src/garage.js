@@ -13,6 +13,23 @@
 // clears heat). The menu shows current levels and cash. m11 requires
 // a purchase. Autopilot: drive in, open, buy cheapest, close, continue.
 
+// game.time is a plain seconds number in the base main loop.
+function now(game) {
+  if (typeof game.time === 'number') return game.time;
+  if (game.time && typeof game.time.now === 'number') return game.time.now;
+  return 0;
+}
+
+// Cash lives on game.cash in the base loop (player.cash is the fallback).
+function getCash(game) {
+  if (typeof game.cash === 'number') return game.cash;
+  return (game.player && game.player.cash) || 0;
+}
+function setCash(game, v) {
+  game.cash = v;
+  if (game.player) game.player.cash = v;
+}
+
 export const GARAGE_DEFS = {
   zone: { x: 1000, y: 1000, radius: 130 }, // CONFIG.garage
   upgrades: {
@@ -106,10 +123,10 @@ export function buyUpgrade(game, kind) {
   const up = carUpgrades(game, p.car);
   const price = upgradePrice(kind, up[kind]);
   if (price == null) return null;
-  if ((p.cash || 0) < price) return null;
-  p.cash -= price;
+  if (getCash(game) < price) return null;
+  setCash(game, getCash(game) - price);
   up[kind] += 1;
-  g.lastPurchaseAt = game.time ? game.time.now : 0;
+  g.lastPurchaseAt = now(game);
   g.purchaseCount += 1;
   applyUpgradesToCar(p.car, up);
   if (game.audio && game.audio.cash) game.audio.cash();
@@ -123,12 +140,12 @@ export function buyPaint(game, colourIndex) {
   if (!p || !p.car) return null;
   const paint = GARAGE_DEFS.paint;
   if (colourIndex < 0 || colourIndex >= paint.colours.length) return null;
-  if ((p.cash || 0) < paint.price) return null;
-  p.cash -= paint.price;
+  if (getCash(game) < paint.price) return null;
+  setCash(game, getCash(game) - paint.price);
   const up = carUpgrades(game, p.car);
   up.paint = paint.colours[colourIndex];
   p.car.color = paint.colours[colourIndex];
-  g.lastPurchaseAt = game.time ? game.time.now : 0;
+  g.lastPurchaseAt = now(game);
   g.purchaseCount += 1;
   if (game.audio && game.audio.cash) game.audio.cash();
   return { kind: 'paint', colour: paint.colours[colourIndex], price: paint.price };
@@ -180,7 +197,7 @@ export function renderGarageMenu(game) {
   el.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(8,10,20,0.72);z-index:40;font-family:sans-serif;';
   const p = game.player || {};
   const up = carUpgrades(game, p.car);
-  const cash = p.cash || 0;
+  const cash = getCash(game);
   const rows = Object.keys(GARAGE_DEFS.upgrades).map((kind) => {
     const def = GARAGE_DEFS.upgrades[kind];
     const level = up[kind];

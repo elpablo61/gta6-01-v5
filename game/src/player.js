@@ -98,8 +98,8 @@ export class Player {
   shoot(game) {
     // The weapons system (systems builder) owns fire logic when loaded;
     // this base path fires the pistol so the base game shoots standalone.
-    if (game.weapons && game.weapons.fire) {
-      game.weapons.fire(game);
+    if (game.systems && game.systems.weapons && game.systems.weapons.fire) {
+      game.systems.weapons.fire(game);
       return;
     }
     if (this.ammo <= 0) return;

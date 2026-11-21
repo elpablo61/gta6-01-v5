@@ -14,6 +14,13 @@
 //   game.bullets [] {x,y,vx,vy,damage,range,from,life}
 //   game.time.now (seconds, for fire-rate gating)
 
+// game.time is a plain seconds number in the base main loop.
+function now(game) {
+  if (typeof game.time === 'number') return game.time;
+  if (game.time && typeof game.time.now === 'number') return game.time.now;
+  return 0;
+}
+
 export const WEAPON_DEFS = {
   pistol: {
     id: 'pistol', name: 'Pistol', key: '1', damage: 18, fireInterval: 0.28,
@@ -90,7 +97,7 @@ export function switchWeapon(game, id) {
   if (!game.weapons.owned[id]) return false;
   if (game.weapons.current === id) return false;
   game.weapons.current = id;
-  game.weapons.lastSwitchAt = game.time ? game.time.now : 0;
+  game.weapons.lastSwitchAt = now(game);
   if (game.hud) game.hud.weaponFlash = 0.6;
   return true;
 }
@@ -130,25 +137,25 @@ export function addAmmo(game, id, amount) {
 export function tryFire(game, aimAngle) {
   ensureWeapons(game);
   const p = game.player;
-  if (!p || !p.onFoot) return false; // shooting is on foot only
-  const now = game.time ? game.time.now : 0;
+  if (!p || p.inCar) return false; // shooting is on foot only
+  const t = now(game);
   const def = currentWeapon(game);
-  if (now - game.weapons.lastShotAt < def.fireInterval) return false;
+  if (t - game.weapons.lastShotAt < def.fireInterval) return false;
   if (currentAmmo(game) <= 0) {
-    game.weapons.lastShotAt = now; // dry-fire click still gates the rate
+    game.weapons.lastShotAt = t; // dry-fire click still gates the rate
     if (game.audio && game.audio.click) game.audio.click();
     return false;
   }
   game.weapons.ammo[def.id] -= 1;
-  game.weapons.lastShotAt = now;
-  const angle = aimAngle == null ? (p.aimAngle != null ? p.aimAngle : p.angle || 0) : aimAngle;
+  game.weapons.lastShotAt = t;
+  const angle = aimAngle == null ? (p.aim != null ? p.aim : p.angle || 0) : aimAngle;
   const mx = p.x + Math.cos(angle) * 26;
   const my = p.y + Math.sin(angle) * 26;
   for (let i = 0; i < def.pellets; i++) {
     const spread = (Math.random() - 0.5) * 2 * def.spread;
     const a = angle + spread;
     game.bullets.push({
-      x: mx, y: my,
+      x: mx, y: my, angle: a,
       vx: Math.cos(a) * def.bulletSpeed, vy: Math.sin(a) * def.bulletSpeed,
       damage: def.damage, range: def.range, travelled: 0,
       from: 'player', life: def.range / def.bulletSpeed, color: def.color,
@@ -176,7 +183,7 @@ export function spawnAmmoPickup(game, x, y, amount) {
 export function updateWeaponPickups(game) {
   ensureWeapons(game);
   const p = game.player;
-  if (!p || !p.onFoot) return;
+  if (!p || p.inCar) return;
   for (const c of game.crates) {
     if (c.taken) continue;
     const dx = p.x - c.x, dy = p.y - c.y;

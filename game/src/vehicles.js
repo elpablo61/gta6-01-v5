@@ -270,6 +270,7 @@ export class Vehicles {
     if (!car) return;
     car.isPlayer = false;
     car.speed *= 0.3;
+    game.audio.engine(false);
     pl.inCar = false;
     pl.car = null;
     pl.x = car.x - Math.cos(car.angle) * 0 - 34;
