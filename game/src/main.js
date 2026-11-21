@@ -464,7 +464,17 @@ function spawnOnRoadNear(game, dist) {
 // Two parked police cars across the road ahead of the player's heading.
 function placeRoadblock(game) {
   const p = game.player;
-  const heading = p.car ? p.car.angle : 0;
+  // Aim along the route, not the car's nose: while the car stops and
+  // rotates in place for a sharp turn its angle points anywhere, and a
+  // block placed off-route is one the player drives away from (and that
+  // gets cleared as stale). The objective target is the travel direction.
+  const t = game.objectiveTarget;
+  let heading;
+  if (t && Math.hypot(t.x - p.x, t.y - p.y) > 100) {
+    heading = Math.atan2(t.y - p.y, t.x - p.x);
+  } else {
+    heading = p.car ? p.car.angle : 0;
+  }
   const ahead = { x: p.x + Math.cos(heading) * 520, y: p.y + Math.sin(heading) * 520 };
   const pt = nearestRoadPoint(game, ahead.x, ahead.y);
   const angle = pt.vertical ? 0 : Math.PI / 2;

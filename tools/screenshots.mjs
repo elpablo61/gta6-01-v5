@@ -45,6 +45,12 @@ function snapState(page) {
       heli: !!(g.helicopter && g.helicopter.active),
       enemies: (g.enemies || []).length, police: (g.police || []).length,
       patrolCars: (g.policeState && g.policeState.patrolCars ? g.policeState.patrolCars.length : 0),
+      roadblocks: (g.cars || []).filter((c) => c.isRoadblock).length,
+      nearestRoadblock: (() => {
+        const bs = (g.cars || []).filter((c) => c.isRoadblock);
+        if (!bs.length) return null;
+        return Math.round(Math.min(...bs.map((c) => Math.hypot(c.x - g.player.x, c.y - g.player.y))));
+      })(),
       carSpeed: g.player && g.player.car ? Math.round(g.player.car.speed || 0) : 0,
       nearestEnemy: (() => {
         const es = (g.enemies || []).filter((e) => e.alive !== false);
@@ -125,29 +131,38 @@ async function shoot(browser, shot) {
       if (g.systems.police && g.systems.police.setHeat) g.systems.police.setHeat(g, s.heat);
       else { g.heat = s.heat; if (g._updateStars) g._updateStars(); }
     }, setup);
-    await page.evaluate((s) => {
+    const teleport = async () => page.evaluate((s) => {
       const g = window.game;
-      if (s.teleport) {
-        g.player.x = s.teleport.x; g.player.y = s.teleport.y;
-        if (g.player.car) { g.player.car.x = s.teleport.x; g.player.car.y = s.teleport.y; }
-        // A teleport invalidates the autopilot's memoized route — without
-        // a reset it keeps following stale waypoints and wedges the car
-        // inside a block. Clear it so the route rebuilds from the new spot.
-        if (g.autopilot) {
-          g.autopilot.route = null; g.autopilot.routeDest = null;
-          g.autopilot.routeIndex = 0; g.autopilot.walkTarget = null;
-          g.autopilot.walkTargetFor = null;
-        }
+      if (!s.teleport) return;
+      g.player.x = s.teleport.x; g.player.y = s.teleport.y;
+      if (g.player.car) { g.player.car.x = s.teleport.x; g.player.car.y = s.teleport.y; }
+      // A teleport invalidates the autopilot's memoized route — without
+      // a reset it keeps following stale waypoints and wedges the car
+      // inside a block. Clear it so the route rebuilds from the new spot.
+      if (g.autopilot) {
+        g.autopilot.route = null; g.autopilot.routeDest = null;
+        g.autopilot.routeIndex = 0; g.autopilot.walkTarget = null;
+        g.autopilot.walkTargetFor = null;
       }
       if (s.timeOfDay !== undefined) g.timeOfDay = s.timeOfDay;
       if (s.dialog) g.showDialog(s.dialog.title, s.dialog.text, null);
     }, setup);
-    await setHeatExact();
     if (setup.waitForSpeed) {
-      // A chase shot needs the car actually moving with pursuers in
-      // frame — wait for speed plus at least one police unit nearby.
-      // Heat is re-set exactly afterwards: driving may have added heat.
-      await waitFor(page, (st) => st.carSpeed > 120 && (st.police + st.patrolCars) >= 1, 25, 'moving chase with police');
+      // Chase flow, in order: (1) set the wanted level so police spawn;
+      // (2) wait for pursuers; (3) teleport to the pose spot — AFTER the
+      // police exist, so the car is still near the spot when the shot is
+      // taken (it drives away from it within seconds); (4) wait for the
+      // car to be moving; (5) re-set heat (driving may have added heat).
+      await setHeatExact();
+      await waitFor(page, (st) => (st.police + st.patrolCars) >= 1, 20, 'police in pursuit');
+      await teleport();
+      await waitFor(page, (st) => st.carSpeed > 120, 15, 'car moving', 400);
+      if (setup.waitForRoadblock) {
+        await waitFor(page, (st) => st.roadblocks >= 1 && st.nearestRoadblock !== null && st.nearestRoadblock < 800, 20, 'roadblock ahead');
+      }
+      await setHeatExact();
+    } else {
+      await teleport();
       await setHeatExact();
     }
     await sleep((setup.settleSeconds || 3) * 1000);
