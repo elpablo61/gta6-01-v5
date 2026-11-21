@@ -121,13 +121,18 @@ export function routeTo(game, tx, ty) {
 // straight to the exact target (static landmarks only — never for the
 // moving courier). Returns distance to the final target.
 export function driveCarToward(game, car, tx, ty, cruise, dt) {
-  // Chase close-range: when the courier is within 220, drive straight
-  // at it instead of following route waypoints (it is already on a
-  // nearby road — the ram window is what matters now).
+  // Chase close-range: when the courier is within 400, drive straight
+  // at it instead of following route waypoints. Waypoints make
+  // driveToward crawl to 120 near each junction — and a ram hit needs
+  // speed >120, so waypoint-crawling into the courier can never score.
+  // Aim 300 units PAST the courier (along its heading): the target
+  // stays far, so driveToward never brakes for it, and the player
+  // rams THROUGH the courier at full speed instead of slowing into it.
   if (game.mission && game.mission.id === 'm2' && game.courier) {
     const dc = Math.hypot(game.courier.x - car.x, game.courier.y - car.y);
-    if (dc < 220) {
-      driveToward(car, game.courier.x, game.courier.y, cruise, dt, game);
+    if (dc < 400) {
+      const ca = game.courier.angle || 0;
+      driveToward(car, game.courier.x + Math.cos(ca) * 300, game.courier.y + Math.sin(ca) * 300, cruise, dt, game);
       if (game.player) { game.player.x = car.x; game.player.y = car.y; }
       return dc;
     }
